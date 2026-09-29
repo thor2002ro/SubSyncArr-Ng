@@ -118,6 +118,7 @@ services:
       - EXCLUDE_PATHS=/movies/temp,/tv/downloads
       - MAX_CONCURRENT_SYNC_TASKS=1
       - INCLUDE_ENGINES=ffsubsync,autosubsync,alass
+      - REPLACE_ORIGINAL_SUBTITLE=false
       - AUTOSUBSYNC_PARALLELISM=1
       - AUTOSUBSYNC_SKIP_FORCED=true
       - DELETE_ORPHANED_SRT=true
@@ -145,6 +146,7 @@ Open your browser at **`http://localhost:3030`** (or your server's IP address on
 | `CRON_SCHEDULE` | `0 0 * * *` | Cron schedule for automatic runs, or `disabled` to turn off |
 | `MAX_CONCURRENT_SYNC_TASKS` | `1` | Number of files processed in parallel (1 is recommended to conserve CPU/RAM) |
 | `INCLUDE_ENGINES` | `ffsubsync,autosubsync,alass` | Comma-separated list of engines to run |
+| `REPLACE_ORIGINAL_SUBTITLE` | `false` | Replace the source subtitle after a successful run. Applies only when exactly one engine is enabled |
 | `DELETE_ORPHANED_SRT` | `true` | Automatically delete subtitle files that have no matching video in their folder |
 | `AUTOSUBSYNC_PARALLELISM` | `1` | Worker threads for autosubsync (set to 1 to prevent OOM on 4K files) |
 | `AUTOSUBSYNC_SKIP_FORCED` | `true` | Skip autosubsync on `.forced.srt` files (handled by ffsubsync and alass) |

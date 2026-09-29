@@ -1,5 +1,5 @@
 import EventEmitter from 'events';
-import { existsSync, unlinkSync } from 'fs';
+import { existsSync, renameSync, unlinkSync } from 'fs';
 import { ScanConfig, getScanConfig, getSuffixConfig } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile } from './findMatchingVideoFile';
@@ -17,6 +17,8 @@ export class ProcessingEngine extends EventEmitter {
   private logBuffer: string[] = [];
   private maxLogBufferSize: number;
   private fileLogs: Map<string, string[]> = new Map();
+  private replaceOriginalRequested: boolean;
+  private replaceOriginalSubtitle: boolean;
   public stateManager?: StateManager;
 
   constructor() {
@@ -24,6 +26,8 @@ export class ProcessingEngine extends EventEmitter {
     this.maxConcurrent = parseInt(process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10);
     this.enabledEngines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
     this.maxLogBufferSize = parseInt(process.env.LOG_BUFFER_SIZE || '1000', 10);
+    this.replaceOriginalRequested = process.env.REPLACE_ORIGINAL_SUBTITLE === 'true';
+    this.replaceOriginalSubtitle = this.replaceOriginalRequested && this.enabledEngines.length === 1;
   }
 
   private log(message: string): void {
@@ -77,15 +81,19 @@ export class ProcessingEngine extends EventEmitter {
     this.log(`[${new Date().toISOString()}] Scan paths: ${JSON.stringify(scanConfig.includePaths)}`);
 
     const { files: srtFiles, skippedCount, skippedFiles } = await findAllSrtFiles(scanConfig);
-    this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files to process (${skippedCount} already synced)`);
-
     this.emit('run:files_found', srtFiles, skippedCount, skippedFiles);
+    this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files to process (${skippedCount} already synced)`);
 
     // Keep up to maxConcurrent files in flight at all times: each worker pulls the next
     // file off the shared queue as soon as it finishes, instead of waiting for an entire
     // fixed-size batch to drain (which stalls idle slots behind the slowest file in a batch).
     this.log(`[${new Date().toISOString()}] Processing with concurrency: ${this.maxConcurrent}`);
     this.log(`[${new Date().toISOString()}] Enabled engines: ${this.enabledEngines.join(', ')}`);
+    if (this.replaceOriginalRequested && !this.replaceOriginalSubtitle) {
+      this.log(
+        `[${new Date().toISOString()}] REPLACE_ORIGINAL_SUBTITLE ignored: exactly one engine must be enabled`,
+      );
+    }
 
     let nextIndex = 0;
     const worker = async (): Promise<void> => {
@@ -278,7 +286,7 @@ export class ProcessingEngine extends EventEmitter {
         const duration = Date.now() - startTime;
 
         // Record success in processed_files with dual fingerprint (video + srt)
-        if (result.success && this.stateManager) {
+        if (result.success && this.stateManager && !this.replaceOriginalSubtitle) {
           this.stateManager.markProcessed(
             srtPath,
             engine,
@@ -356,6 +364,36 @@ export class ProcessingEngine extends EventEmitter {
     }
 
     if (anyEngineSucceeded) {
+      if (this.replaceOriginalSubtitle) {
+        const engine = this.enabledEngines[0];
+        const suffixConfig = getSuffixConfig();
+        const suffix = suffixConfig[engine as keyof typeof suffixConfig] || engine;
+        const outputPath = buildOutputPath(srtPath, suffix);
+
+        try {
+          renameSync(outputPath, srtPath);
+          srtFingerprint = null;
+          if (this.stateManager) {
+            this.stateManager.markProcessed(
+              srtPath,
+              engine,
+              videoPath,
+              await getVideoFingerprint(),
+              await getSrtFingerprint(),
+            );
+          }
+          const replaceMsg = `[${new Date().toISOString()}] ✓ Replaced original subtitle with ${engine} output: ${fileName}`;
+          this.log(replaceMsg);
+          this.appendFileLog(srtPath, replaceMsg);
+        } catch (error) {
+          const replaceFailMsg = `[${new Date().toISOString()}] ✗ Failed to replace original subtitle: ${error instanceof Error ? error.message : String(error)}`;
+          this.log(replaceFailMsg);
+          this.appendFileLog(srtPath, replaceFailMsg);
+          this.emit('file:failed', { srtPath });
+          return;
+        }
+      }
+
       const finishMsg = `[${new Date().toISOString()}] ✓ Completed successfully for: ${fileName}`;
       this.log(finishMsg);
       this.appendFileLog(srtPath, finishMsg);
