@@ -1,6 +1,7 @@
 import { buildOutputPath, execPromise, ProcessingResult } from './helpers';
 import { existsSync, unlinkSync } from 'fs';
 import { getSuffixConfig } from './config';
+import { withUtf8Subtitle } from './subtitleEncoding';
 
 export function isForcedSubtitle(filePath: string): boolean {
   return /\.forced\.srt$/i.test(filePath) || /[-._]forced[-._]/i.test(filePath);
@@ -32,17 +33,21 @@ export async function generateAutosubsyncSubtitles(
   }
 
   try {
-    const parallelism = process.env.AUTOSUBSYNC_PARALLELISM || '1';
-    const maxShift = process.env.AUTOSUBSYNC_MAX_SHIFT_SECS ? ` --max_shift_secs ${process.env.AUTOSUBSYNC_MAX_SHIFT_SECS}` : '';
-    const command = `autosubsync --parallelism ${parallelism}${maxShift} "${videoPath}" "${srtPath}" "${outputPath}"`;
-    console.log(`${new Date().toLocaleString()} Processing: ${command}`);
-    const { stdout, stderr } = await execPromise(command, undefined, onLog);
-    return {
-      success: true,
-      message: `Successfully processed: ${outputPath}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    };
+    return await withUtf8Subtitle(srtPath, onLog, async (inputPath) => {
+      const parallelism = process.env.AUTOSUBSYNC_PARALLELISM || '1';
+      const maxShift = process.env.AUTOSUBSYNC_MAX_SHIFT_SECS
+        ? ` --max_shift_secs ${process.env.AUTOSUBSYNC_MAX_SHIFT_SECS}`
+        : '';
+      const command = `autosubsync --parallelism ${parallelism}${maxShift} "${videoPath}" "${inputPath}" "${outputPath}"`;
+      console.log(`${new Date().toLocaleString()} Processing: ${command}`);
+      const { stdout, stderr } = await execPromise(command, undefined, onLog);
+      return {
+        success: true,
+        message: `Successfully processed: ${outputPath}`,
+        stdout: stdout || undefined,
+        stderr: stderr || undefined,
+      };
+    });
   } catch (error) {
     // Clean up partial or bad output file written before failure
     if (existsSync(outputPath)) {

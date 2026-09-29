@@ -1,6 +1,7 @@
 import { buildOutputPath, execPromise, ProcessingResult } from './helpers';
 import { existsSync, unlinkSync } from 'fs';
 import { getSuffixConfig } from './config';
+import { withUtf8Subtitle } from './subtitleEncoding';
 
 export async function generateFfsubsyncSubtitles(
   srtPath: string,
@@ -20,15 +21,17 @@ export async function generateFfsubsyncSubtitles(
   }
 
   try {
-    const command = `ffsubsync "${videoPath}" -i "${srtPath}" -o "${outputPath}"`;
-    console.log(`${new Date().toLocaleString()} Processing: ${command}`);
-    const { stdout, stderr } = await execPromise(command, undefined, onLog);
-    return {
-      success: true,
-      message: `Successfully processed: ${outputPath}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    };
+    return await withUtf8Subtitle(srtPath, onLog, async (inputPath) => {
+      const command = `ffsubsync "${videoPath}" -i "${inputPath}" -o "${outputPath}"`;
+      console.log(`${new Date().toLocaleString()} Processing: ${command}`);
+      const { stdout, stderr } = await execPromise(command, undefined, onLog);
+      return {
+        success: true,
+        message: `Successfully processed: ${outputPath}`,
+        stdout: stdout || undefined,
+        stderr: stderr || undefined,
+      };
+    });
   } catch (error) {
     // Clean up partial or bad output file written before failure
     if (existsSync(outputPath)) {

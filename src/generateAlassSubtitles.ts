@@ -1,6 +1,7 @@
 import { buildOutputPath, execPromise, ProcessingResult } from './helpers';
 import { existsSync, unlinkSync } from 'fs';
 import { getSuffixConfig, getAlassExtraArgs } from './config';
+import { withUtf8Subtitle } from './subtitleEncoding';
 
 export async function generateAlassSubtitles(
   srtPath: string,
@@ -19,16 +20,18 @@ export async function generateAlassSubtitles(
   }
 
   try {
-    const extraArgs = getAlassExtraArgs();
-    const command = `alass "${videoPath}" "${srtPath}" "${outputPath}"${extraArgs ? ` ${extraArgs}` : ''}`;
-    console.log(`${new Date().toLocaleString()} Processing: ${command}`);
-    const { stdout, stderr } = await execPromise(command, undefined, onLog);
-    return {
-      success: true,
-      message: `Successfully processed: ${outputPath}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    };
+    return await withUtf8Subtitle(srtPath, onLog, async (inputPath) => {
+      const extraArgs = getAlassExtraArgs();
+      const command = `alass "${videoPath}" "${inputPath}" "${outputPath}"${extraArgs ? ` ${extraArgs}` : ''}`;
+      console.log(`${new Date().toLocaleString()} Processing: ${command}`);
+      const { stdout, stderr } = await execPromise(command, undefined, onLog);
+      return {
+        success: true,
+        message: `Successfully processed: ${outputPath}`,
+        stdout: stdout || undefined,
+        stderr: stderr || undefined,
+      };
+    });
   } catch (error) {
     // Clean up partial or bad output file written before failure
     if (existsSync(outputPath)) {
