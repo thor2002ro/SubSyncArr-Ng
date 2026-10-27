@@ -2,230 +2,326 @@ class SubsyncarrPlusClient {
   constructor() {
     this.ws = null;
     this.state = { currentRun: null, files: [], isRunning: false };
+    this.runFiles = [];
+    this.stateVersion = 0;
+    this.history = [];
+    this.historyCache = {};
+    this.config = null;
+    this.enabledEngines = [];
     this.reconnectInterval = 3000;
-    this.historyCache = {}; // Cache run data for file lookups
     this.selectedPaths = [];
     this.fileLogs = {};
     this.activeModalFile = null;
-
+    this.activeModalRunId = null;
+    this.fileLogRequest = 0;
+    this.liveLines = [];
+    this.logsPaused = false;
+    this.resultsLimit = 50;
+    this.clearedRunId = null;
+    this.clearedFiles = new Set();
+    this.modalFocus = new Map();
+    this.connected = false;
+    this.notices = new Map();
     this.initTheme();
-    this.initWebSocket();
     this.setupEventHandlers();
+    this.render();
+    this.initWebSocket();
     this.fetchInitialState();
     this.fetchConfigStatus();
+    this.clockTimer = setInterval(() => this.renderClock(), 1000);
+    this.scheduleUpdateTimer = setInterval(() => this.fetchConfigStatus(), 60000);
+  }
+
+  setNotice(key, message) {
+    if (message) this.notices.set(key, message);
+    else this.notices.delete(key);
+    document.getElementById('dashboardNotice').textContent = [...this.notices.values()].join(' ');
+  }
+
+  getDisplayRun() {
+    if (this.state.isRunning && !this.state.currentRun) return null;
+    return this.state.currentRun || this.history[0] || null;
+  }
+
+  getDisplayFiles(includeCleared = false) {
+    const run = this.getDisplayRun();
+    if (!run) return [];
+    const files = this.state.currentRun ? this.runFiles : this.historyCache[run.id]?.files || [];
+    return !includeCleared && this.clearedRunId === run.id
+      ? files.filter((file) => !this.clearedFiles.has(file.file_path))
+      : files;
+  }
+
+  getEngineNames(files = this.getDisplayFiles(true)) {
+    const found = files.flatMap((file) => Object.keys(SubsyncarrDashboard.engineResults(file.engines)));
+    const active = files.map((file) => file.current_engine).filter(Boolean);
+    return [...new Set([...this.enabledEngines, ...found, ...active])].filter((name) => name !== 'all');
+  }
+
+  updateConnection(connected) {
+    this.connected = connected;
+    document.getElementById('connectionStatus').classList.toggle('offline', !connected);
+    document.getElementById('connectionLabel').textContent = connected ? 'Live connection' : 'Reconnecting…';
+    this.setNotice('connection', connected ? '' : 'Live connection lost. Reconnecting; displayed data may be stale.');
+    this.updateButtonVisibility();
+  }
+
+  applyState(data) {
+    const changed = this.state.currentRun?.id !== data.currentRun?.id;
+    if (changed) {
+      if (this.activeModalFile) this.closeFileLogsModal();
+      this.logsPaused = false;
+      this.fileLogs = {};
+      this.liveLines = [];
+      this.clearedRunId = null;
+      this.clearedFiles = new Set();
+      this.resultsLimit = 50;
+    }
+    this.state = { currentRun: data.currentRun, files: data.files || [], isRunning: data.isRunning };
+    this.runFiles = [...this.state.files];
+    this.fileLogs = { ...this.fileLogs, ...data.fileLogs };
+    if (data.fileLogs) {
+      this.liveLines = Object.entries(data.fileLogs)
+        .flatMap(([filePath, logs]) => logs.slice(-10).map((log) => ({ filePath, log })))
+        .slice(-120);
+    }
+    this.lastStateAt = Date.now();
+    this.setNotice('status', '');
+    this.render();
   }
 
   initWebSocket() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     this.ws = new WebSocket(`${protocol}//${location.host}/ws`);
-
     this.ws.onopen = () => {
-      console.log('WebSocket connected');
+      const reconnected = this.hasConnected;
+      this.hasConnected = true;
+      this.updateConnection(true);
+      if (reconnected) {
+        this.fetchHistory();
+        this.fetchConfigStatus();
+      }
     };
-
     this.ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      this.handleMessage(msg);
+      try {
+        this.handleMessage(JSON.parse(event.data));
+      } catch (error) {
+        console.error('Unable to read live update:', error);
+      }
     };
-
     this.ws.onclose = () => {
-      console.log('WebSocket disconnected, reconnecting...');
-      setTimeout(() => this.initWebSocket(), this.reconnectInterval);
+      this.updateConnection(false);
+      this.reconnectTimer = setTimeout(() => this.initWebSocket(), this.reconnectInterval);
     };
-
-    this.ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-    };
-  }
-
-  hashPath(path) {
-    let hash = 0;
-    for (let i = 0; i < path.length; i++) {
-      hash = (hash << 5) - hash + path.charCodeAt(i);
-      hash |= 0;
-    }
-    return Math.abs(hash).toString(36);
+    this.ws.onerror = () => this.updateConnection(false);
   }
 
   handleFileLog(srtPath, log) {
-    if (!this.fileLogs[srtPath]) {
-      this.fileLogs[srtPath] = [];
-    }
+    if (!this.fileLogs[srtPath]) this.fileLogs[srtPath] = [];
     this.fileLogs[srtPath].push(log);
-    if (this.fileLogs[srtPath].length > 300) {
-      this.fileLogs[srtPath].shift();
+    if (this.fileLogs[srtPath].length > 300) this.fileLogs[srtPath].shift();
+    this.liveLines.push({ filePath: srtPath, log, time: Date.now() });
+    if (this.liveLines.length > 120) this.liveLines.shift();
+    if (!this.logsPaused && !this.logRenderPending) {
+      this.logRenderPending = true;
+      requestAnimationFrame(() => {
+        this.logRenderPending = false;
+        this.renderLiveOutput();
+      });
     }
-
-    // Append to live element if currently visible
-    const fileId = this.hashPath(srtPath);
-    const container = document.getElementById(`log-${fileId}`);
-    if (container) {
-      const line = document.createElement('div');
-      line.className = 'file-log-line';
-      line.textContent = log;
-      container.appendChild(line);
-      container.scrollTop = container.scrollHeight;
-    }
-
-    // If modal is open for this file, append live
-    if (this.activeModalFile === srtPath) {
-      const modalContent = document.getElementById('fileLogsContent');
-      if (modalContent) {
-        modalContent.textContent += (modalContent.textContent ? '\n' : '') + log;
-        modalContent.scrollTop = modalContent.scrollHeight;
-      }
+    if (this.activeModalFile === srtPath && this.activeModalRunId === this.getDisplayRun()?.id) {
+      const output = document.getElementById('fileLogsContent');
+      output.textContent += (output.textContent ? '\n' : '') + log;
+      output.scrollTop = output.scrollHeight;
     }
   }
 
   handleMessage(msg) {
+    if (msg.type !== 'file:log') this.stateVersion++;
     switch (msg.type) {
       case 'state':
-        this.state = msg.data;
-        if (msg.data.fileLogs) {
-          this.fileLogs = { ...this.fileLogs, ...msg.data.fileLogs };
-        }
-        this.render();
+        this.applyState(msg.data);
         break;
       case 'file:log':
         this.handleFileLog(msg.data.srtPath, msg.data.log);
         break;
       case 'run:started':
-        this.state.currentRun = msg.data;
-        this.state.isRunning = true;
-        this.render();
-        break;
-      case 'run:completed':
-        this.state.currentRun = msg.data;
-        this.state.isRunning = false;
+        if (this.activeModalFile) this.closeFileLogsModal();
+        this.logsPaused = false;
+        this.state = { currentRun: msg.data, files: [], isRunning: true };
+        this.runFiles = [];
+        this.fileLogs = {};
+        this.liveLines = [];
+        this.clearedRunId = null;
+        this.clearedFiles = new Set();
+        this.resultsLimit = 50;
+        this.lastStateAt = Date.now();
         this.render();
         this.fetchHistory();
         break;
+      case 'run:completed':
       case 'run:cancelled':
         this.state.currentRun = msg.data;
         this.state.isRunning = false;
+        this.lastStateAt = Date.now();
         this.render();
         this.fetchHistory();
         break;
       case 'file:updated':
         this.updateFile(msg.data.file);
-        if (msg.data.run) {
-          this.state.currentRun = msg.data.run;
-        }
+        if (msg.data.run) this.state.currentRun = msg.data.run;
+        this.lastStateAt = Date.now();
         this.render();
         break;
       case 'files:cleared':
-        this.state.currentRun = msg.data.currentRun;
-        this.state.files = msg.data.files;
+        this.clearedFiles = new Set([
+          ...(this.clearedFiles || []),
+          ...this.getDisplayFiles()
+            .filter((file) => ['completed', 'skipped', 'error'].includes(file.status))
+            .map((file) => file.file_path),
+        ]);
+        this.clearedRunId = this.getDisplayRun()?.id;
+        if (msg.data.currentRun) this.state.currentRun = msg.data.currentRun;
+        this.state.files = msg.data.files || [];
         this.render();
         break;
     }
   }
 
   updateFile(fileData) {
-    const index = this.state.files.findIndex((f) => f.file_path === fileData.file_path);
-    if (index >= 0) {
-      this.state.files[index] = fileData;
-    } else {
-      this.state.files.push(fileData);
+    for (const files of [this.state.files, this.runFiles]) {
+      const index = files.findIndex((file) => file.file_path === fileData.file_path);
+      if (index >= 0) files[index] = fileData;
+      else files.push(fileData);
     }
   }
 
   async fetchInitialState() {
-    const response = await fetch('/api/status');
-    const data = await response.json();
-    this.state = data;
-    this.render();
+    const version = this.stateVersion;
+    try {
+      const response = await fetch('/api/status');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      if (version === this.stateVersion) this.applyState(data);
+      this.setNotice('status', '');
+    } catch (error) {
+      this.setNotice('status', 'Unable to load status. Live updates will retry the connection.');
+      console.error('Failed to fetch status:', error);
+    }
     this.fetchHistory();
   }
 
   async fetchHistory() {
-    const response = await fetch('/api/history');
-    const history = await response.json();
-
-    // Fetch file results for each run to calculate engine stats
-    const historyWithStats = await Promise.all(
-      history.map(async (run) => {
-        try {
-          const filesResponse = await fetch(`/api/runs/${run.id}`);
-          const data = await filesResponse.json();
-          const runWithFiles = { ...run, files: data.files || [] };
-          // Cache for file list lookups
-          this.historyCache[run.id] = runWithFiles;
-          return runWithFiles;
-        } catch (error) {
-          console.error(`Failed to fetch files for run ${run.id}:`, error);
-          return { ...run, files: [] };
+    const request = (this.historyRequest || 0) + 1;
+    this.historyRequest = request;
+    try {
+      const response = await fetch('/api/history');
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const history = await response.json();
+      const details = await Promise.all(
+        history.map(async (run) => {
+          try {
+            const result = await fetch(`/api/runs/${encodeURIComponent(run.id)}`);
+            if (!result.ok) throw new Error(`HTTP ${result.status}`);
+            const data = await result.json();
+            const files = data.files || [];
+            return { ...run, files, engineStats: this.calculateEngineStats(files), detailsAvailable: true };
+          } catch {
+            return { ...run, files: [], detailsAvailable: false };
+          }
+        }),
+      );
+      if (request !== this.historyRequest) return;
+      this.history = history;
+      this.historyCache = Object.fromEntries(details.map((run) => [run.id, run]));
+      const currentDetails = this.historyCache[this.state.currentRun?.id];
+      if (currentDetails?.detailsAvailable) {
+        // Discovery inserts pending/pre-skipped rows without individual events.
+        // Merge that snapshot while retaining any newer WebSocket file updates.
+        const files = new Map(this.runFiles.map((file) => [file.file_path, file]));
+        for (const file of currentDetails.files) {
+          const existing = files.get(file.file_path);
+          if (!existing || file.updated_at > existing.updated_at) files.set(file.file_path, file);
         }
-      }),
-    );
-
-    this.renderHistory(historyWithStats);
+        this.runFiles = [...files.values()];
+      }
+      this.setNotice(
+        'history',
+        details.some((run) => !run.detailsAvailable)
+          ? 'Some historical file details could not be loaded. Reload history to retry.'
+          : '',
+      );
+      this.render();
+    } catch (error) {
+      if (request !== this.historyRequest) return;
+      this.setNotice('history', 'Unable to load run history. Refresh the page to retry.');
+      console.error('Failed to fetch history:', error);
+      document.getElementById('historyBody').innerHTML =
+        '<tr><td colspan="12" class="no-data">History unavailable. Refresh to retry.</td></tr>';
+    }
   }
 
   async fetchConfigStatus() {
     try {
       const response = await fetch('/api/config');
-      const config = await response.json();
-      this.renderConfigStatus(config);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      this.config = await response.json();
+      this.enabledEngines = this.config.engines || [];
+      this.setNotice('config', '');
+      this.renderConfigStatus(this.config);
+      this.render();
     } catch (error) {
-      console.error('Failed to fetch config status:', error);
-      this.renderConfigStatus({ isConfigured: false, paths: [], excludePaths: [] });
+      this.setNotice('config', 'Configuration unavailable. Folder and schedule status may be stale.');
+      console.error('Failed to fetch configuration:', error);
+      if (!this.config) {
+        document.getElementById('watchedPaths').textContent = 'Configuration unavailable';
+        document.getElementById('scheduleDate').textContent = 'Schedule unavailable';
+      }
     }
   }
 
   renderConfigStatus(config) {
-    // Render path status
-    const light = document.getElementById('statusLight');
-    const label = document.getElementById('statusLabel');
-    const paths = document.getElementById('statusPaths');
-
-    if (config.isConfigured) {
-      light.className = 'status-light active';
-      label.textContent = 'Watching Folders';
-      const pathsList = config.paths.join(', ');
-      paths.textContent = pathsList;
-      paths.title = pathsList; // Show full path on hover
-    } else {
-      light.className = 'status-light inactive';
-      label.textContent = 'No Paths Configured';
-      paths.textContent = 'Using default: /scan_dir';
-    }
-
-    // Render schedule status
+    const paths = config.paths || [];
+    document.getElementById('folderCount').textContent = paths.length;
+    document.getElementById('watchedPaths').innerHTML =
+      paths
+        .map(
+          (path) =>
+            `<div class="watched-path"><svg aria-hidden="true"><use href="#folder"/></svg><span class="path-label" title="${this.escapeHtml(path)}">${this.escapeHtml(path)}</span></div>`,
+        )
+        .join('') || '<span class="muted">No scan paths configured</span>';
+    const excluded = config.excludePaths || [];
+    document.getElementById('excludedPaths').textContent = excluded.length
+      ? `Excluded: ${excluded.join(', ')}`
+      : config.isConfigured
+        ? 'Configured scan roots'
+        : 'Using the default scan directory';
     this.renderScheduleStatus(config.schedule);
   }
 
   renderScheduleStatus(schedule) {
-    const scheduleLabel = document.getElementById('scheduleLabel');
-    const scheduleTime = document.getElementById('scheduleTime');
-
-    if (schedule && schedule.enabled) {
-      scheduleLabel.textContent = 'Next Scheduled Scan';
-
-      if (schedule.nextRun) {
-        const nextRunDate = new Date(schedule.nextRun);
-        const now = new Date();
-        const diff = nextRunDate - now;
-
-        // Format time until next run
-        const timeUntil = this.formatTimeUntil(diff);
-        scheduleTime.textContent = `${nextRunDate.toLocaleString()} (${timeUntil})`;
-        scheduleTime.title = `Schedule: ${schedule.description}`;
-
-        // Update countdown every minute
-        if (this.scheduleUpdateTimer) {
-          clearInterval(this.scheduleUpdateTimer);
-        }
-        this.scheduleUpdateTimer = setInterval(() => {
-          this.fetchConfigStatus();
-        }, 60000); // Update every minute
-      } else {
-        scheduleTime.textContent = schedule.description || schedule.cron;
-      }
-    } else {
-      scheduleLabel.textContent = 'Auto-Scan Disabled';
-      scheduleTime.textContent = 'Manual runs only';
-    }
+    const enabled = Boolean(schedule?.enabled);
+    const next = enabled && schedule.nextRun ? new Date(schedule.nextRun) : null;
+    const validNext = next && Number.isFinite(next.getTime());
+    document.getElementById('scheduleLabel').textContent = enabled ? 'Next scheduled scan' : 'Automatic scans';
+    document.getElementById('scheduleDate').textContent = validNext
+      ? next.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+      : enabled
+        ? 'Next run unavailable'
+        : 'Manual runs only';
+    document.getElementById('scheduleTime').textContent = validNext
+      ? next.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      : enabled
+        ? '—'
+        : 'Disabled';
+    document.getElementById('scheduleCountdown').textContent = validNext ? this.formatTimeUntil(next - Date.now()) : '';
+    document.getElementById('scheduleDescription').textContent = enabled
+      ? schedule.description || 'Scheduled scanning'
+      : 'Start a full run or select a folder';
+    document.getElementById('scheduleCron').textContent = enabled ? schedule.cron || '' : '';
+    const status = document.getElementById('scheduleEnabled');
+    status.textContent = enabled ? 'Schedule enabled' : 'Schedule disabled';
+    status.className = enabled ? 'green' : 'muted';
   }
 
   formatTimeUntil(milliseconds) {
@@ -262,15 +358,11 @@ class SubsyncarrPlusClient {
 
   applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
-    const iconEl = document.getElementById('themeToggleIcon');
-    const btnEl = document.getElementById('themeToggle');
-    if (iconEl) {
-      iconEl.textContent = theme === 'dark' ? '☀️' : '🌙';
-    }
-    if (btnEl) {
-      btnEl.title = theme === 'dark' ? 'Passa alla modalità chiara' : 'Passa alla modalità scura';
-      btnEl.setAttribute('aria-label', btnEl.title);
-    }
+    document.getElementById('themeToggleIcon').innerHTML =
+      `<svg aria-hidden="true"><use href="#${theme === 'dark' ? 'sun' : 'moon'}"/></svg>`;
+    const button = document.getElementById('themeToggle');
+    button.title = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+    button.setAttribute('aria-label', button.title);
   }
 
   toggleTheme() {
@@ -281,6 +373,57 @@ class SubsyncarrPlusClient {
   }
 
   setupEventHandlers() {
+    document.getElementById('fileSearch').addEventListener('input', () => {
+      this.resultsLimit = 50;
+      this.renderFiles();
+    });
+    document.getElementById('statusFilter').addEventListener('change', () => {
+      this.resultsLimit = 50;
+      this.renderFiles();
+    });
+    document.getElementById('loadMoreResults').addEventListener('click', () => {
+      this.resultsLimit += 50;
+      this.renderFiles();
+    });
+    document.getElementById('logToggle').addEventListener('click', () => {
+      this.logsPaused = !this.logsPaused;
+      const button = document.getElementById('logToggle');
+      button.textContent = this.logsPaused ? 'Resume view' : 'Pause view';
+      button.setAttribute('aria-pressed', String(this.logsPaused));
+      document.getElementById('liveOutputScope').textContent = this.logsPaused
+        ? '/ view paused; still collecting'
+        : '/ all active files';
+      if (!this.logsPaused) this.renderLiveOutput();
+    });
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+      const { action, path, engine, run, category } = button.dataset;
+      if (action === 'log') this.showFileLog(path);
+      else if (action === 'skip') this.skipFile(path);
+      else if (action === 'reset') this.resetSkipStatus(path, engine, button);
+      else if (action === 'run-log') this.viewLogs(run);
+      else if (action === 'file-list') this.showFileList(run, category);
+    });
+    document.addEventListener('keydown', (event) => {
+      const modal = document.querySelector('.modal:not(.hidden)');
+      if (!modal) return;
+      if (event.key === 'Escape') this.closeModal(modal.id);
+      if (event.key === 'Tab') {
+        const controls = [
+          ...modal.querySelectorAll('button:not(:disabled), [href], input, select, [tabindex="0"]'),
+        ].filter((element) => element.getClientRects().length);
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }
+    });
     const themeToggle = document.getElementById('themeToggle');
     if (themeToggle) {
       themeToggle.addEventListener('click', () => {
@@ -327,11 +470,11 @@ class SubsyncarrPlusClient {
 
     // Logs modal handlers
     document.getElementById('closeLogsModal').addEventListener('click', () => {
-      document.getElementById('logsModal').classList.add('hidden');
+      this.closeModal('logsModal');
     });
 
     document.getElementById('closeLogsButton').addEventListener('click', () => {
-      document.getElementById('logsModal').classList.add('hidden');
+      this.closeModal('logsModal');
     });
 
     document.getElementById('copyLogs').addEventListener('click', async () => {
@@ -372,7 +515,7 @@ class SubsyncarrPlusClient {
     // Close logs modal when clicking outside
     document.getElementById('logsModal').addEventListener('click', (e) => {
       if (e.target.id === 'logsModal') {
-        document.getElementById('logsModal').classList.add('hidden');
+        this.closeModal('logsModal');
       }
     });
 
@@ -408,8 +551,8 @@ class SubsyncarrPlusClient {
 
     // View current run logs
     document.getElementById('viewCurrentRunLogs')?.addEventListener('click', () => {
-      if (this.state.currentRun) {
-        this.viewLogs(this.state.currentRun.id);
+      if (this.getDisplayRun()) {
+        this.viewLogs(this.getDisplayRun().id);
       } else {
         alert('No active run currently running');
       }
@@ -422,19 +565,42 @@ class SubsyncarrPlusClient {
 
     // File list modal handlers
     document.getElementById('closeFileListModal').addEventListener('click', () => {
-      document.getElementById('fileListModal').classList.add('hidden');
+      this.closeModal('fileListModal');
     });
 
     document.getElementById('closeFileListButton').addEventListener('click', () => {
-      document.getElementById('fileListModal').classList.add('hidden');
+      this.closeModal('fileListModal');
     });
 
     // Close file list modal when clicking outside
     document.getElementById('fileListModal').addEventListener('click', (e) => {
       if (e.target.id === 'fileListModal') {
-        document.getElementById('fileListModal').classList.add('hidden');
+        this.closeModal('fileListModal');
       }
     });
+  }
+
+  openModal(id) {
+    const modal = document.getElementById(id);
+    if (modal.classList.contains('hidden')) this.modalFocus.set(id, document.activeElement);
+    modal.classList.remove('hidden');
+    document.body.classList.add('modal-open');
+    modal.querySelector('button')?.focus();
+  }
+
+  closeModal(id) {
+    document.getElementById(id).classList.add('hidden');
+    if (id === 'fileLogsModal') {
+      this.activeModalFile = null;
+      this.activeModalRunId = null;
+      this.fileLogRequest++;
+      document.getElementById('fileLogsContent').textContent = '';
+      document.getElementById('fileLogsMeta').textContent = '';
+      document.getElementById('fileLogsEngines').textContent = '';
+    }
+    if (!document.querySelector('.modal:not(.hidden)')) document.body.classList.remove('modal-open');
+    this.modalFocus.get(id)?.focus();
+    this.modalFocus.delete(id);
   }
 
   async openPicker() {
@@ -442,7 +608,7 @@ class SubsyncarrPlusClient {
     this.renderSelectedPaths();
     const tree = document.getElementById('folderTree');
     tree.innerHTML = '<div class="tree-loading">Loading…</div>';
-    document.getElementById('customPathModal').classList.remove('hidden');
+    this.openModal('customPathModal');
     try {
       const data = await this.fetchBrowse(null);
       tree.innerHTML = '';
@@ -457,7 +623,7 @@ class SubsyncarrPlusClient {
   }
 
   closePicker() {
-    document.getElementById('customPathModal').classList.add('hidden');
+    this.closeModal('customPathModal');
   }
 
   async fetchBrowse(path) {
@@ -484,27 +650,36 @@ class SubsyncarrPlusClient {
 
     const icon = document.createElement('span');
     icon.className = 'tree-icon';
-    icon.textContent = isFile ? '📄' : '📁';
+    icon.innerHTML = `<svg aria-hidden="true"><use href="#${isFile ? 'file' : 'folder'}"/></svg>`;
 
     const name = document.createElement('span');
     name.className = 'tree-name';
     name.textContent = entry.name;
     name.title = entry.path;
 
-    row.appendChild(chevron);
-    row.appendChild(icon);
-    row.appendChild(name);
+    const toggleButton = document.createElement('button');
+    toggleButton.type = 'button';
+    toggleButton.className = 'tree-toggle';
+    toggleButton.setAttribute('aria-expanded', 'false');
+    toggleButton.setAttribute('aria-label', `Browse ${entry.path}`);
+    const content = isFile ? row : toggleButton;
+    content.appendChild(chevron);
+    content.appendChild(icon);
+    content.appendChild(name);
 
     if (isFile) {
       // Files are display-only — no expand, no add.
       wrapper.appendChild(row);
       return wrapper;
     }
+    row.appendChild(toggleButton);
 
     const addBtn = document.createElement('button');
     addBtn.className = 'tree-add';
+    addBtn.type = 'button';
     addBtn.textContent = '+';
     addBtn.title = 'Add this path';
+    addBtn.setAttribute('aria-label', `Add ${entry.path}`);
     addBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       this.addSelectedPath(entry.path);
@@ -520,6 +695,7 @@ class SubsyncarrPlusClient {
         loaded = true;
         children.innerHTML = '<div class="tree-loading" style="padding-left:' + (depth + 1) * 16 + 'px">Loading…</div>';
         children.classList.remove('hidden');
+        toggleButton.setAttribute('aria-expanded', 'true');
         chevron.textContent = '▼';
         try {
           const data = await this.fetchBrowse(entry.path);
@@ -534,6 +710,7 @@ class SubsyncarrPlusClient {
             data.entries.forEach((child) => children.appendChild(this.makeTreeRow(child, depth + 1)));
           }
         } catch (err) {
+          loaded = false;
           children.innerHTML = '';
           const errEl = document.createElement('div');
           errEl.className = 'tree-error';
@@ -545,17 +722,11 @@ class SubsyncarrPlusClient {
       }
       const willOpen = children.classList.contains('hidden');
       children.classList.toggle('hidden');
+      toggleButton.setAttribute('aria-expanded', String(willOpen));
       chevron.textContent = willOpen ? '▼' : '▶';
     };
 
-    chevron.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggle();
-    });
-    name.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggle();
-    });
+    toggleButton.addEventListener('click', toggle);
 
     wrapper.appendChild(row);
     wrapper.appendChild(children);
@@ -591,6 +762,8 @@ class SubsyncarrPlusClient {
       span.textContent = path;
       const btn = document.createElement('button');
       btn.className = 'selected-path-remove';
+      btn.type = 'button';
+      btn.setAttribute('aria-label', `Remove ${path}`);
       btn.textContent = '×';
       btn.title = 'Remove';
       btn.addEventListener('click', () => this.removeSelectedPath(path));
@@ -601,7 +774,10 @@ class SubsyncarrPlusClient {
   }
 
   escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    return String(s).replace(
+      /[&<>"']/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+    );
   }
 
   async startRun(paths = null) {
@@ -658,7 +834,8 @@ class SubsyncarrPlusClient {
       const data = await response.json();
 
       document.getElementById('logsContent').textContent = data.logs || 'No logs available';
-      document.getElementById('logsModal').classList.remove('hidden');
+      document.getElementById('runLogsTitle').textContent = `Run log #${runId.slice(0, 8)}`;
+      this.openModal('logsModal');
     } catch (error) {
       console.error('Failed to fetch logs:', error);
       alert('Failed to load logs');
@@ -687,126 +864,247 @@ class SubsyncarrPlusClient {
   }
 
   render() {
-    this.renderProgress();
+    const summary = SubsyncarrDashboard.summarizeRun(
+      this.getDisplayRun(),
+      this.getDisplayFiles(true),
+      this.state.isRunning,
+    );
+    this.renderSummary(summary);
+    this.renderProgress(summary);
     this.renderFiles();
+    this.renderEngineStats();
+    this.renderHistory(summary);
+    this.renderLiveOutput();
     this.updateButtonVisibility();
+    this.renderClock();
+  }
+
+  renderSummary(summary) {
+    const run = this.getDisplayRun();
+    const discovering = this.state.isRunning && !run;
+    for (const [id, value] of Object.entries({
+      metricTotal: summary.total,
+      metricProcessing: summary.processing,
+      metricCompleted: summary.completed,
+      metricSkipped: summary.skipped,
+      metricFailed: summary.failed,
+    })) {
+      document.getElementById(id).textContent = run ? value.toLocaleString() : '—';
+    }
+    document.getElementById('processingMetric').classList.toggle('active', this.state.isRunning);
+    document.getElementById('metricQueued').textContent = discovering
+      ? 'Scanning configured folders'
+      : this.state.isRunning
+        ? `${summary.queued.toLocaleString()} files queued`
+        : 'No active processing';
+    document.getElementById('summaryScope').textContent = discovering
+      ? 'Discovering subtitle files…'
+      : run
+        ? `${this.state.isRunning ? 'Current run' : 'Latest run'} · ${new Date(run.start_time).toLocaleString()} · ${run.status}`
+        : 'Ready to synchronize. Start a full run or choose a folder.';
+    document.getElementById('engineScope').textContent = this.state.isRunning ? 'This run' : 'Latest run';
+  }
+
+  renderClock() {
+    const run = this.getDisplayRun();
+    const end = run?.end_time || (this.state.isRunning ? Date.now() : null);
+    document.getElementById('metricElapsed').textContent =
+      run && end ? SubsyncarrDashboard.formatDuration(end - run.start_time) : '—';
+    document.getElementById('metricStarted').textContent = run
+      ? `Started ${new Date(run.start_time).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`
+      : 'No run yet';
+    document.getElementById('lastUpdated').textContent = this.lastStateAt
+      ? `Updated ${SubsyncarrDashboard.formatDuration(Date.now() - this.lastStateAt)} ago`
+      : 'Waiting for server';
+  }
+
+  renderEngineStats() {
+    const files = this.getDisplayFiles(true);
+    const names = this.getEngineNames(files);
+    const run = this.getDisplayRun();
+    const available = !run || this.state.currentRun || this.historyCache[run.id]?.detailsAvailable;
+    const stats = SubsyncarrDashboard.engineStats(files, names);
+    document.getElementById('engineStats').innerHTML =
+      names
+        .map((name) =>
+          available
+            ? `<tr><td>${this.escapeHtml(name)}</td><td class="green">${stats[name].pass}</td><td class="red">${stats[name].fail}</td><td class="amber">${stats[name].skipped}</td></tr>`
+            : `<tr><td>${this.escapeHtml(name)}</td><td colspan="3" class="muted" title="File details unavailable">—</td></tr>`,
+        )
+        .join('') || '<tr><td colspan="4" class="muted">No engine results yet</td></tr>';
+    const short = { ffsubsync: 'F', autosubsync: 'Au', alass: 'Al', subsync: 'S' };
+    document.getElementById('engineLegend').innerHTML =
+      names
+        .map((name) => `<span><strong>${short[name] || this.escapeHtml(name)}</strong> ${this.escapeHtml(name)}</span>`)
+        .join('') + '<span>✓ passed · × failed · ↷ skipped · • active · − waiting</span>';
+    document.getElementById('engineCount').textContent = this.config
+      ? `${this.enabledEngines.length} engines configured now`
+      : '';
+  }
+
+  renderLiveOutput() {
+    const toggle = document.getElementById('logToggle');
+    toggle.textContent = this.logsPaused ? 'Resume view' : 'Pause view';
+    toggle.setAttribute('aria-pressed', String(this.logsPaused));
+    document.getElementById('liveOutputScope').textContent = this.logsPaused
+      ? '/ view paused; still collecting'
+      : '/ all active files';
+    if (this.logsPaused) return;
+    const output = document.getElementById('liveOutput');
+    output.innerHTML =
+      this.liveLines
+        .map(
+          (entry) =>
+            `<div class="log-entry"><time>${entry.time ? new Date(entry.time).toLocaleTimeString() : ''}</time><span class="log-file" title="${this.escapeHtml(entry.filePath)}">${this.escapeHtml(this.basename(entry.filePath))}</span><span class="log-message">${this.escapeHtml(entry.log)}</span></div>`,
+        )
+        .join('') ||
+      '<span class="quiet">Waiting for engine output. Historical output is available in run and file logs.</span>';
+    output.scrollTop = output.scrollHeight;
+  }
+
+  fileAction(path, action, label, extra = '') {
+    return `<button class="btn small" type="button" data-action="${action}" data-path="${this.escapeHtml(path)}" ${extra}>${label}</button>`;
+  }
+
+  engineChips(file, engineNames) {
+    const results = SubsyncarrDashboard.engineResults(file.engines);
+    const names = [...new Set([...engineNames, ...Object.keys(results)])];
+    const short = { ffsubsync: 'F', autosubsync: 'Au', alass: 'Al', subsync: 'S' };
+    return (
+      '<div class="engines">' +
+      names
+        .map((name) => {
+          const result = results[name];
+          const running = this.state.isRunning && file.status === 'processing' && file.current_engine === name;
+          const status = result ? (result.skipped ? 'skipped' : result.success ? 'ok' : 'fail') : running ? 'busy' : '';
+          const symbol = result ? (result.skipped ? '↷' : result.success ? '✓' : '×') : running ? '•' : '−';
+          const title = `${name}: ${result?.message || (running ? 'processing' : 'no result recorded')}${result?.duration != null ? ` (${SubsyncarrDashboard.formatDuration(result.duration)})` : ''}`;
+          const reset =
+            result?.skipped && !result.success
+              ? `<button type="button" class="engine-reset" data-action="reset" data-path="${this.escapeHtml(file.file_path)}" data-engine="${this.escapeHtml(name)}" aria-label="Reset ${this.escapeHtml(name)} skip for ${this.escapeHtml(this.basename(file.file_path))}">↻</button>`
+              : '';
+          return `<span class="engine ${status} ${reset ? 'resettable' : ''}" title="${this.escapeHtml(title)}" aria-label="${this.escapeHtml(title)}">${short[name] || this.escapeHtml(name)} ${symbol}${reset}</span>`;
+        })
+        .join('') +
+      '</div>'
+    );
+  }
+
+  fileTime(file) {
+    const durations = Object.values(SubsyncarrDashboard.parseEngines(file.engines))
+      .map((result) => result.duration)
+      .filter(Number.isFinite);
+    return durations.length
+      ? SubsyncarrDashboard.formatDuration(durations.reduce((total, duration) => total + duration, 0))
+      : '—';
+  }
+
+  fileNameCell(file) {
+    return `<div class="file-name" title="${this.escapeHtml(this.basename(file.file_path))}">${this.escapeHtml(this.cleanFileName(file.file_path))}</div><small title="${this.escapeHtml(file.file_path)}">${this.escapeHtml(file.file_path)}</small>`;
   }
 
   updateButtonVisibility() {
-    const stopButton = document.getElementById('stopRun');
-    const startButton = document.getElementById('startRun');
-    const customButton = document.getElementById('startCustom');
-
-    if (this.state.isRunning) {
-      stopButton.classList.remove('hidden');
-      startButton.classList.add('hidden');
-      customButton.classList.add('hidden');
-    } else {
-      stopButton.classList.add('hidden');
-      startButton.classList.remove('hidden');
-      customButton.classList.remove('hidden');
-    }
+    document.getElementById('stopRun').classList.toggle('hidden', !this.state.isRunning);
+    document.getElementById('startRun').classList.toggle('hidden', this.state.isRunning);
+    document.getElementById('startCustom').classList.toggle('hidden', this.state.isRunning);
+    for (const id of ['startRun', 'startCustom', 'stopRun']) document.getElementById(id).disabled = !this.connected;
+    document.getElementById('viewCurrentRunLogs').disabled = !this.getDisplayRun();
+    document.getElementById('clearCompleted').disabled = !this.getDisplayFiles().some((file) =>
+      ['completed', 'skipped', 'error'].includes(file.status),
+    );
   }
 
-  renderProgress() {
-    const { currentRun } = this.state;
-    const section = document.getElementById('currentRun');
-
-    if (!currentRun || currentRun.status === 'completed') {
-      section.classList.add('hidden');
-      return;
-    }
-
-    section.classList.remove('hidden');
-
-    // Use engine-level progress for more granular updates
-    const percent = currentRun.total_engines > 0 ? (currentRun.completed_engines / currentRun.total_engines) * 100 : 0;
-    document.getElementById('progressFill').style.width = `${percent}%`;
+  renderProgress(summary) {
+    const run = this.getDisplayRun();
+    const discovering = this.state.isRunning && !run;
+    document.getElementById('runTitle').textContent = discovering
+      ? 'Discovering files'
+      : this.state.isRunning
+        ? 'Active run'
+        : run
+          ? 'Latest run'
+          : 'Ready to synchronize';
+    const status = document.getElementById('runStatus');
+    status.className = `status-badge ${this.state.isRunning ? 'running' : ['completed', 'cancelled'].includes(run?.status) ? run.status : 'idle'}`;
+    status.textContent = discovering ? 'Discovering' : this.state.isRunning ? 'Processing' : run ? run.status : 'Idle';
+    document.getElementById('runId').textContent = run ? `Run #${run.id.slice(0, 8)}` : '';
+    document.getElementById('runProgress').classList.toggle('hidden', !run);
+    document.getElementById('progressFill').style.width = `${summary.percent}%`;
+    document.getElementById('progressBar').setAttribute('aria-valuenow', String(summary.percent));
+    document.getElementById('progressPercent').textContent = `${summary.percent}%`;
     document.getElementById('progressText').textContent =
-      `${currentRun.completed} / ${currentRun.total_files} files (${Math.round(percent)}%)`;
+      `${summary.completedEngines.toLocaleString()} / ${summary.totalEngines.toLocaleString()} tasks`;
+    document.getElementById('progressDetail').textContent =
+      `${summary.completed} completed · ${summary.skipped} skipped · ${summary.failed} failed`;
   }
 
   renderFiles() {
-    const processing = this.state.files.filter((f) => f.status === 'processing');
-    const completed = this.state.files.filter((f) => ['completed', 'skipped', 'error'].includes(f.status));
-
-    // Render processing files
-    const progressHtml = processing
-      .map((file) => {
-        const engines = JSON.parse(file.engines || '{}');
-        const fileId = this.hashPath(file.file_path);
-        const logs = this.fileLogs[file.file_path] || [];
-        const logsText = logs.map((l) => `<div class="file-log-line">${this.escapeHtml(l)}</div>`).join('');
-        const escapedPath = file.file_path.replace(/'/g, "\\'");
-
-        return `
-        <div class="file-card processing">
-          <div class="file-header">
-            <div class="file-name">${this.escapeHtml(this.basename(file.file_path))}</div>
-            <div class="file-actions">
-              <button class="btn-log" type="button" onclick="client.showFileLog('${escapedPath}')">
-                📄 View Log
-              </button>
-              <button class="btn-skip" type="button" onclick="client.skipFile('${escapedPath}')">
-                Skip
-              </button>
-            </div>
-          </div>
-          <div class="engine-status">
-            ${file.current_engine ? `⚙️ Working on ${this.escapeHtml(file.current_engine)}` : 'Starting...'}
-          </div>
-          ${this.renderEngineResults(engines, file.file_path)}
-          <div class="file-live-log-box">
-            <div class="live-log-top">
-              <span class="live-tag"><span class="live-dot"></span> LIVE FILE LOG</span>
-              <button class="btn-copy-mini" type="button" onclick="client.copyFileLog('${escapedPath}', event)">Copy</button>
-            </div>
-            <div class="file-live-log-content" id="log-${fileId}">${logsText}</div>
-          </div>
-        </div>
-      `;
-      })
-      .join('');
-
-    document.getElementById('filesInProgress').innerHTML = progressHtml;
-
-    // Auto-scroll log containers
-    processing.forEach((file) => {
-      const fileId = this.hashPath(file.file_path);
-      const container = document.getElementById(`log-${fileId}`);
-      if (container) {
-        container.scrollTop = container.scrollHeight;
-      }
-    });
-
-    // Render completed files
-    const completedHtml = completed
-      .map((file) => {
-        const engines = JSON.parse(file.engines || '{}');
-        const escapedPath = file.file_path.replace(/'/g, "\\'");
-        return `
-        <div class="file-card ${file.status}">
-          <div class="file-header">
-            <div class="file-name">${this.escapeHtml(this.basename(file.file_path))}</div>
-            <div class="file-actions">
-              <button class="btn-file-log" type="button" onclick="client.showFileLog('${escapedPath}')">
-                📄 Log
-              </button>
-            </div>
-          </div>
-          ${this.renderEngineResults(engines, file.file_path)}
-        </div>
-      `;
-      })
-      .join('');
-
+    const files = this.getDisplayFiles();
+    const run = this.getDisplayRun();
+    const unavailable = run && !this.state.currentRun && this.historyCache[run.id]?.detailsAvailable === false;
+    const engineNames = this.getEngineNames(this.getDisplayFiles(true));
+    const processing = this.state.isRunning ? files.filter((file) => file.status === 'processing') : [];
+    document.getElementById('filesInProgress').innerHTML =
+      processing
+        .map((file) => {
+          const logs = this.fileLogs[file.file_path] || [];
+          const latest = logs[logs.length - 1] || 'Waiting for engine output';
+          return `<tr><td class="file">${this.fileNameCell(file)}</td><td><span class="tag running">${this.escapeHtml(file.current_engine || 'Starting')}</span><div class="file-stage" title="${this.escapeHtml(latest)}">${this.escapeHtml(latest)}</div></td><td>${this.engineChips(file, engineNames)}</td><td class="file-engine-time">${this.fileTime(file)}</td><td><div class="file-actions">${this.fileAction(file.file_path, 'log', 'Log')}${this.fileAction(file.file_path, 'skip', 'Skip')}</div></td></tr>`;
+        })
+        .join('') ||
+      `<tr><td colspan="5" class="empty-state"><strong>${this.state.isRunning ? 'Preparing files for processing' : 'No active processing'}</strong>${this.state.isRunning ? 'Waiting for the next file update.' : 'Start a full run or choose a folder to synchronize.'}</td></tr>`;
+    const completed = files.filter((file) => ['completed', 'skipped', 'error'].includes(file.status));
+    const filtered = SubsyncarrDashboard.filterFiles(
+      completed,
+      document.getElementById('fileSearch').value,
+      document.getElementById('statusFilter').value,
+    );
+    const visible = filtered.slice(0, this.resultsLimit);
+    document.getElementById('completedCount').textContent = completed.length.toLocaleString();
     document.getElementById('completedList').innerHTML =
-      completedHtml || '<p class="no-data">No completed files yet</p>';
+      visible
+        .map((file) => {
+          const engines = SubsyncarrDashboard.parseEngines(file.engines);
+          const failures = Object.entries(engines).filter(([, result]) => !result.success && !result.skipped);
+          const skips = Object.entries(engines).filter(([, result]) => result.skipped);
+          const messages = failures.length
+            ? failures.map(([name, result]) => `${name}: ${result.message || 'failed'}`).join(' · ')
+            : skips.length
+              ? skips.map(([name, result]) => `${name}: ${result.message || 'skipped'}`).join(' · ')
+              : '';
+          const detail =
+            messages ||
+            (file.status === 'skipped'
+              ? 'Already synchronized or skipped'
+              : file.status === 'error'
+                ? 'See file log for details'
+                : `${Object.values(engines).filter((result) => result.success && !result.skipped).length} engines passed`);
+          const status = {
+            completed: ['ok', '✓ Completed'],
+            skipped: ['warn', '↷ Skipped'],
+            error: ['fail', '× Failed'],
+          }[file.status];
+          return `<tr><td class="file">${this.fileNameCell(file)}</td><td><span class="tag ${status[0]}">${status[1]}</span></td><td>${this.engineChips(file, engineNames)}</td><td><div class="file-detail ${failures.length ? 'amber' : 'muted'}" title="${this.escapeHtml(detail)}">${this.escapeHtml(detail)}</div></td><td class="file-engine-time">${this.fileTime(file)}</td><td>${this.fileAction(file.file_path, 'log', 'Log')}</td></tr>`;
+        })
+        .join('') ||
+      `<tr><td colspan="6" class="empty-state">${unavailable ? 'File results unavailable. Refresh the page to retry.' : completed.length ? 'No subtitles match these filters.' : 'No file results to display.'}</td></tr>`;
+    document.getElementById('resultCount').textContent =
+      `Showing ${visible.length} of ${filtered.length} matching files · ${this.state.isRunning ? 'current' : 'latest'} run`;
+    document.getElementById('loadMoreResults').classList.toggle('hidden', visible.length >= filtered.length);
   }
 
   async showFileLog(filePath) {
+    const runId = this.getDisplayRun()?.id;
+    if (!runId) return;
+    const request = ++this.fileLogRequest;
     this.activeModalFile = filePath;
-    const file = this.state.files.find((f) => f.file_path === filePath);
+    this.activeModalRunId = runId;
+    const isCurrent = () =>
+      request === this.fileLogRequest &&
+      this.activeModalFile === filePath &&
+      this.activeModalRunId === runId &&
+      this.getDisplayRun()?.id === runId;
+    const file = this.getDisplayFiles(true).find((f) => f.file_path === filePath);
     const fileName = this.basename(filePath);
     document.getElementById('fileLogsTitle').textContent = `Log: ${fileName}`;
 
@@ -830,7 +1128,7 @@ class SubsyncarrPlusClient {
     // Render engines breakdown
     const enginesContainer = document.getElementById('fileLogsEngines');
     if (file && file.engines) {
-      const engines = JSON.parse(file.engines || '{}');
+      const engines = SubsyncarrDashboard.parseEngines(file.engines);
       enginesContainer.innerHTML = this.renderEngineResults(engines, file.file_path);
     } else {
       enginesContainer.innerHTML = '';
@@ -843,6 +1141,7 @@ class SubsyncarrPlusClient {
         const res = await fetch(`/api/file-logs?path=${encodeURIComponent(filePath)}`);
         if (res.ok) {
           const data = await res.json();
+          if (!isCurrent()) return;
           if (data.logs && data.logs.length > 0) {
             logs = data.logs;
             this.fileLogs[filePath] = logs;
@@ -855,7 +1154,7 @@ class SubsyncarrPlusClient {
 
     let fullLogText = logs.join('\n');
     if (file && file.engines) {
-      const engines = JSON.parse(file.engines || '{}');
+      const engines = SubsyncarrDashboard.parseEngines(file.engines);
       const engineOutputs = Object.entries(engines)
         .map(([name, res]) => {
           let out = '';
@@ -870,62 +1169,33 @@ class SubsyncarrPlusClient {
       }
     }
 
+    if (!isCurrent()) return;
     const contentElem = document.getElementById('fileLogsContent');
     contentElem.textContent = fullLogText || 'No log output recorded for this file yet.';
     contentElem.scrollTop = contentElem.scrollHeight;
 
-    document.getElementById('fileLogsModal').classList.remove('hidden');
+    this.openModal('fileLogsModal');
   }
 
   closeFileLogsModal() {
     this.activeModalFile = null;
-    document.getElementById('fileLogsModal').classList.add('hidden');
-  }
-
-  copyFileLog(filePath, event) {
-    if (event) event.stopPropagation();
-    const logs = this.fileLogs[filePath] || [];
-    const text = logs.join('\n') || 'No logs recorded.';
-    navigator.clipboard.writeText(text).then(() => {
-      const btn = event?.target;
-      if (btn) {
-        const originalText = btn.textContent;
-        btn.textContent = '✓';
-        setTimeout(() => (btn.textContent = originalText), 1500);
-      }
-    });
+    this.closeModal('fileLogsModal');
   }
 
   renderEngineResults(engines, filePath) {
-    return Object.entries(engines)
+    const aggregate = engines.all?.message;
+    const results = Object.entries(SubsyncarrDashboard.engineResults(engines))
       .map(([name, result]) => {
-        const icon = result.success ? '✓' : '✗';
-        const className = result.success ? 'success' : 'error';
-        const duration = (result.duration / 1000).toFixed(1);
-        const error =
-          !result.success && result.message
-            ? `<div class="engine-error-message">${this.escapeHtml(result.message)}</div>`
-            : '';
-
-        // Only the "3+ consecutive failures" circuit breaker sets skipped+!success;
-        // the "already processed" skip is skipped+success and needs no reset.
-        const resetBtn =
+        const status = result.skipped ? 'skipped' : result.success ? 'success' : 'error';
+        const icon = result.skipped ? '↷' : result.success ? '✓' : '×';
+        const reset =
           result.skipped && !result.success && filePath
-            ? `<button class="btn-reset-skip" type="button" onclick="client.resetSkipStatus('${filePath.replace(/'/g, "\\'")}', '${name}', this)">↻ Reset</button>`
+            ? `<button class="btn-reset-skip" type="button" data-action="reset" data-path="${this.escapeHtml(filePath)}" data-engine="${this.escapeHtml(name)}">↻ Reset</button>`
             : '';
-
-        return `
-        <div class="engine-result ${className}">
-          <div class="engine-result-row">
-            <span>${icon} ${name}</span>
-            <span class="duration">${duration}s</span>
-            ${resetBtn}
-          </div>
-          ${error}
-        </div>
-      `;
+        return `<div class="engine-result ${status}"><div class="engine-result-row"><span>${icon} ${this.escapeHtml(name)}</span><span class="duration">${SubsyncarrDashboard.formatDuration(result.duration)}</span>${reset}</div>${result.message ? `<div class="engine-error-message">${this.escapeHtml(result.message)}</div>` : ''}</div>`;
       })
       .join('');
+    return results || (aggregate ? `<p class="muted">${this.escapeHtml(aggregate)}</p>` : '');
   }
 
   async resetSkipStatus(filePath, engine, buttonEl) {
@@ -951,94 +1221,46 @@ class SubsyncarrPlusClient {
   }
 
   calculateEngineStats(files) {
-    const stats = {
-      ffsubsync: { pass: 0, fail: 0 },
-      autosubsync: { pass: 0, fail: 0 },
-      alass: { pass: 0, fail: 0 },
-      subsync: { pass: 0, fail: 0 },
-    };
-
-    files.forEach((file) => {
-      try {
-        const engines = JSON.parse(file.engines);
-        Object.entries(engines).forEach(([engineName, result]) => {
-          if (stats[engineName]) {
-            if (result.success) {
-              stats[engineName].pass++;
-            } else {
-              stats[engineName].fail++;
-            }
-          }
-        });
-      } catch (error) {
-        console.error('Error parsing engine data:', error);
-      }
-    });
-
-    return stats;
+    return SubsyncarrDashboard.engineStats(files, ['ffsubsync', 'autosubsync', 'alass', 'subsync']);
   }
 
-  renderEngineCell(engineStats) {
-    if (engineStats.pass === 0 && engineStats.fail === 0) {
-      return '<td class="engine-cell">-</td>';
-    }
-
-    const parts = [];
-    if (engineStats.pass > 0) {
-      parts.push(`<span class="engine-pass">${engineStats.pass}</span>`);
-    }
-    if (engineStats.fail > 0) {
-      parts.push(`<span class="engine-fail">${engineStats.fail}</span>`);
-    }
-
-    return `<td class="engine-cell">${parts.join('/')}</td>`;
+  renderEngineCell(stats, available = true) {
+    if (!available) return '<td class="engine-cell muted" title="File details unavailable">—</td>';
+    if (!stats.pass && !stats.fail && !stats.skipped) return '<td class="engine-cell quiet">—</td>';
+    return `<td class="engine-cell" title="${stats.pass} passed, ${stats.fail} failed, ${stats.skipped} skipped"><span class="engine-pass">${stats.pass}</span><span class="quiet"> / </span><span class="${stats.fail ? 'engine-fail' : 'quiet'}">${stats.fail}</span>${stats.skipped ? '<span class="amber"> ↷</span>' : ''}</td>`;
   }
 
-  renderHistory(runs) {
-    const html = runs
-      .map((run) => {
-        const duration = run.end_time ? ((run.end_time - run.start_time) / 1000).toFixed(0) + 's' : 'Running...';
-        const engineStats = this.calculateEngineStats(run.files || []);
-
-        // Make stats clickable if there are files in that category
-        const completedCell =
-          run.completed > 0
-            ? `<span class="stat-clickable stat-completed" onclick="client.showFileList('${run.id}', 'completed')">${run.completed}</span>`
-            : run.completed;
-        const skippedCell =
-          run.skipped > 0
-            ? `<span class="stat-clickable stat-skipped" onclick="client.showFileList('${run.id}', 'skipped')">${run.skipped}</span>`
-            : run.skipped;
-        const failedCell =
-          run.failed > 0
-            ? `<span class="stat-clickable stat-failed" onclick="client.showFileList('${run.id}', 'failed')">${run.failed}</span>`
-            : run.failed;
-
-        return `
-        <tr>
-          <td>${new Date(run.start_time).toLocaleString()}</td>
-          <td><span class="status-badge ${run.status}">${run.status}</span></td>
-          <td>${run.total_files}</td>
-          <td>${completedCell}</td>
-          <td>${skippedCell}</td>
-          <td>${failedCell}</td>
-          ${this.renderEngineCell(engineStats.ffsubsync)}
-          ${this.renderEngineCell(engineStats.autosubsync)}
-          ${this.renderEngineCell(engineStats.alass)}
-          ${this.renderEngineCell(engineStats.subsync)}
-          <td>${duration}</td>
-          <td>
-            <button class="btn-view-logs" onclick="client.viewLogs('${run.id}')">
-              📄 View Logs
-            </button>
-          </td>
-        </tr>
-      `;
-      })
-      .join('');
-
+  renderHistory(currentSummary) {
+    const runs = [...this.history];
+    const current = this.state.currentRun;
+    if (current) {
+      const index = runs.findIndex((run) => run.id === current.id);
+      if (index >= 0) runs[index] = current;
+      else runs.unshift(current);
+    }
+    document.getElementById('historyCount').textContent = `${runs.length} ${runs.length === 1 ? 'run' : 'runs'}`;
     document.getElementById('historyBody').innerHTML =
-      html || '<tr><td colspan="12" class="no-data">No runs yet</td></tr>';
+      runs
+        .map((run) => {
+          const live = current?.id === run.id;
+          const cached = this.historyCache[run.id];
+          const files = live ? this.runFiles : cached?.files || [];
+          const stats = live ? this.calculateEngineStats(files) : cached?.engineStats || this.calculateEngineStats([]);
+          const counts = live
+            ? currentSummary || SubsyncarrDashboard.summarizeRun(run, files, this.state.isRunning)
+            : run;
+          const detailsAvailable = live || cached?.detailsAvailable;
+          const statCell = (value, category, color) =>
+            `<td>${value > 0 && detailsAvailable ? `<button class="stat-clickable ${color}" type="button" data-action="file-list" data-run="${this.escapeHtml(run.id)}" data-category="${category}">${value}</button>` : `<span class="${color}">${value}</span>`}</td>`;
+          const duration = run.end_time
+            ? SubsyncarrDashboard.formatDuration(run.end_time - run.start_time)
+            : live && this.state.isRunning
+              ? SubsyncarrDashboard.formatDuration(Date.now() - run.start_time)
+              : '—';
+          const status = ['running', 'completed', 'cancelled'].includes(run.status) ? run.status : 'idle';
+          return `<tr><td title="${this.escapeHtml(new Date(run.start_time).toLocaleString())}">${this.escapeHtml(new Date(run.start_time).toLocaleString())}</td><td><span class="status-badge ${status}">${this.escapeHtml(run.status)}</span></td><td>${run.total_files}</td>${statCell(counts.completed, 'completed', 'stat-completed')}${statCell(counts.skipped, 'skipped', 'stat-skipped')}${statCell(counts.failed, 'failed', 'stat-failed')}${['ffsubsync', 'autosubsync', 'alass', 'subsync'].map((name) => this.renderEngineCell(stats[name], detailsAvailable)).join('')}<td class="mono muted">${duration}</td><td><button class="btn small" type="button" data-action="run-log" data-run="${this.escapeHtml(run.id)}">Logs</button></td></tr>`;
+        })
+        .join('') || '<tr><td colspan="12" class="no-data">No runs yet. Your scan history will appear here.</td></tr>';
   }
 
   basename(path) {
@@ -1051,7 +1273,7 @@ class SubsyncarrPlusClient {
     let name = filePath.split('/').pop();
 
     // Remove file extension (.srt, .eng.srt, .eng.sdh.srt, etc.)
-    name = name.replace(/\.(eng|spa|fre|ger|ita|por|jpn|kor|chi|rus|ara|hin|pol|dut|swe|nor|dan|fin|tur|heb|tha|vie|ind|msa|hun|ces|slk|ron|bul|ukr|ell|srp|hrv|slv|lit|lav|est|cat|eus|glg|sdh)?\.(srt|sub|ass|ssa|vtt)$/i, '');
+    name = name.replace(/\.(?:[a-z]{2,3}\.)?(?:(?:forced|sdh|cc)\.)?(?:srt|sub|ass|ssa|vtt)$/i, '');
     name = name.replace(/\.(srt|sub|ass|ssa|vtt)$/i, '');
 
     // Try to extract just the title with year
@@ -1067,14 +1289,17 @@ class SubsyncarrPlusClient {
     // Remove release group tags at the end like -DDR, -YTS.MX
     name = name.replace(/\s*-[A-Za-z0-9.]+$/, '');
     // Clean up extra whitespace
-    name = name.replace(/\s+/g, ' ').trim();
+    name = name.replace(/[._]+/g, ' ').replace(/\s+/g, ' ').trim();
 
     return name || filePath.split('/').pop();
   }
 
   // Show files in a category for a specific run
   showFileList(runId, category) {
-    const run = this.historyCache[runId];
+    const run =
+      this.state.currentRun?.id === runId
+        ? { ...this.state.currentRun, files: this.runFiles }
+        : this.historyCache[runId];
     if (!run || !run.files) {
       alert('File data not available for this run');
       return;
@@ -1090,7 +1315,7 @@ class SubsyncarrPlusClient {
         break;
       case 'skipped':
         files = run.files.filter((f) => f.status === 'skipped');
-        title = `Skipped Files (${files.length > 0 ? files.length : (run.skipped || 0)})`;
+        title = `Skipped Files (${files.length > 0 ? files.length : run.skipped || 0})`;
         break;
       case 'failed':
         files = run.files.filter((f) => f.status === 'error');
@@ -1126,13 +1351,13 @@ class SubsyncarrPlusClient {
       document.getElementById('fileListContent').innerHTML = html;
     }
 
-    document.getElementById('fileListModal').classList.remove('hidden');
+    this.openModal('fileListModal');
   }
 
   renderFileSkipReason(file) {
     let engines = {};
     try {
-      engines = JSON.parse(file.engines || '{}');
+      engines = SubsyncarrDashboard.parseEngines(file.engines);
     } catch {
       // ignore
     }
@@ -1150,7 +1375,7 @@ class SubsyncarrPlusClient {
   renderFileErrors(file) {
     let engines;
     try {
-      engines = JSON.parse(file.engines || '{}');
+      engines = SubsyncarrDashboard.parseEngines(file.engines);
     } catch {
       return '';
     }
@@ -1183,5 +1408,5 @@ if (document.readyState === 'loading') {
   });
 } else {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  client = new SubsyncarrClient();
+  client = new SubsyncarrPlusClient();
 }

@@ -18,9 +18,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2048M     # Increased from 768M to avoid OOM killer on 4K/2160p and multi-engine runs
+          memory: 2048M # Increased from 768M to avoid OOM killer on 4K/2160p and multi-engine runs
         reservations:
-          memory: 256M      # Minimum guaranteed memory
+          memory: 256M # Minimum guaranteed memory
     environment:
       - PUID=${PUID:-1000} # Set to your user's UID (run `id -u` to find it)
       - PGID=${PGID:-100} # Set to your user's GID (run `id -g` to find it)
@@ -29,8 +29,8 @@ services:
       - SCAN_PATHS=/movies,/tv # Remember to mount these as volumes. Must begin with /. Default valus is `/scan_dir`
       - EXCLUDE_PATHS=/movies/temp,/tv/downloads # Exclude certain sub-directories from the scan
       - MAX_CONCURRENT_SYNC_TASKS=1 # Defaults to 1 if not set. Higher number will consume more CPU but sync your library faster
-      - INCLUDE_ENGINES=ffsubsync,autosubsync,alass # Append subsync to enable speech-based alignment
-      # SubSync (optional; Docker bundles the sphinx speech backend):
+      - INCLUDE_ENGINES=ffsubsync,autosubsync,alass,subsync
+      # SubSync settings (Docker bundles the sphinx speech backend):
       # - SUBSYNC_SUB_LANG=ron          # Override subtitle language; otherwise inferred
       # - SUBSYNC_REF_LANG=eng          # Set when audio language metadata is missing/wrong
       # - SUBSYNC_REF_STREAM=2          # 1-based absolute stream number, including video

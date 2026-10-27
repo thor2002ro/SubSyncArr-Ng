@@ -1,6 +1,6 @@
 import { ProcessingEngine } from './processingEngine';
 import { StateManager } from './stateManager';
-import { ScanConfig } from './config';
+import { getEnabledEngines, ScanConfig } from './config';
 import { Run } from './database';
 import { once } from 'events';
 
@@ -14,7 +14,7 @@ export class ProcessingCoordinator {
     public engine: ProcessingEngine,
     private stateManager: StateManager,
   ) {
-    this.enabledEngines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
+    this.enabledEngines = getEnabledEngines();
 
     // Inject stateManager into engine so it can check skip status
     this.engine.stateManager = this.stateManager;

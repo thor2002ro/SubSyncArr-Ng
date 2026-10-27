@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SubSyncArr-Ng</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧬</text></svg>" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
     <script>
       (function () {
@@ -17,132 +17,347 @@
       })();
     </script>
   </head>
+
   <body>
-    <div class="container">
-      <header>
-        <div class="header-top">
-          <div class="header-branding">
-            <div class="header-title-row">
-              <h1>🧬 SubSyncArr-Ng</h1>
-              <button id="themeToggle" class="theme-toggle" type="button" title="Toggle theme" aria-label="Toggle dark mode">
-                <span id="themeToggleIcon" class="theme-icon">🌙</span>
+    <svg aria-hidden="true" class="symbols" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <symbol id="wave" viewBox="0 0 24 24"><path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4" /></symbol>
+        <symbol id="sun" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5" />
+        </symbol>
+        <symbol id="folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9H3Z" /></symbol>
+        <symbol id="play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z" /></symbol>
+        <symbol id="stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></symbol>
+        <symbol id="clock" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </symbol>
+        <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></symbol>
+        <symbol id="file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8Zm0 0v5h5M8 12h8m-8 4h5" /></symbol>
+        <symbol id="stack" viewBox="0 0 24 24"><path d="m12 3 10 5-10 5L2 8Zm-9 9 9 5 9-5m-18 5 9 5 9-5" /></symbol>
+        <symbol id="skip" viewBox="0 0 24 24"><path d="m5 5 10 7-10 7Zm13 0v14" /></symbol>
+        <symbol id="alert" viewBox="0 0 24 24"><path d="m12 3 10 18H2Zm0 6v5m0 3v.1" /></symbol>
+        <symbol id="search-icon" viewBox="0 0 24 24">
+          <circle cx="10" cy="10" r="6" />
+          <path d="m15 15 5 5" />
+        </symbol>
+        <symbol id="terminal" viewBox="0 0 24 24"><path d="m4 7 5 5-5 5m9 0h7" /></symbol>
+        <symbol id="arrow" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5" /></symbol>
+        <symbol id="moon" viewBox="0 0 24 24"><path d="M20 14A9 9 0 0 1 10 4a9 9 0 1 0 10 10Z" /></symbol>
+      </defs>
+    </svg>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"
+          ><svg aria-hidden="true"><use href="#wave" /></svg></span
+        >SubSyncArr<span class="muted">-Ng</span><small>DASHBOARD</small>
+      </div>
+      <div class="top-right">
+        <span id="lastUpdated" class="snapshot-label">Connecting…</span
+        ><span id="connectionStatus" class="connection-status offline" role="status"
+          ><span class="dot"></span><span id="connectionLabel">Connecting</span></span
+        ><button class="icon-btn" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme">
+          <span id="themeToggleIcon"
+            ><svg aria-hidden="true"><use href="#sun" /></svg
+          ></span>
+        </button>
+      </div>
+    </header>
+    <main>
+      <div class="page-head">
+        <div>
+          <div class="breadcrumb">Library operations</div>
+          <h1>Synchronization overview</h1>
+          <p class="subtitle" id="summaryScope">Loading synchronization status…</p>
+        </div>
+        <div class="inline controls">
+          <button id="startCustom" class="btn" type="button">
+            <svg aria-hidden="true"><use href="#folder" /></svg>Scan specific path</button
+          ><button id="startRun" class="btn primary" type="button">
+            <svg aria-hidden="true"><use href="#play" /></svg>Start full run</button
+          ><button id="stopRun" class="btn stop hidden" type="button">
+            <svg aria-hidden="true"><use href="#stop" /></svg>Stop run
+          </button>
+        </div>
+      </div>
+      <div id="dashboardNotice" class="dashboard-notice" role="status" aria-live="polite"></div>
+      <div class="metrics" aria-label="Run summary">
+        <div class="metric">
+          <div class="metric-label">
+            Files to process<svg aria-hidden="true"><use href="#stack" /></svg>
+          </div>
+          <div class="metric-value" id="metricTotal">—</div>
+          <div class="metric-detail">Excludes pre-synced files</div>
+        </div>
+        <div class="metric" id="processingMetric">
+          <div class="metric-label">
+            Processing now<svg aria-hidden="true"><use href="#wave" /></svg>
+          </div>
+          <div class="metric-value green" id="metricProcessing">—</div>
+          <div class="metric-detail" id="metricQueued">Waiting for status</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">
+            Completed<svg aria-hidden="true"><use href="#check" /></svg>
+          </div>
+          <div class="metric-value green" id="metricCompleted">—</div>
+          <div class="metric-detail">Synchronized successfully</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">
+            Skipped<svg aria-hidden="true"><use href="#skip" /></svg>
+          </div>
+          <div class="metric-value amber" id="metricSkipped">—</div>
+          <div class="metric-detail">Includes pre-synced files</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">
+            Failed<svg aria-hidden="true"><use href="#alert" /></svg>
+          </div>
+          <div class="metric-value red" id="metricFailed">—</div>
+          <div class="metric-detail">Inspect file logs for details</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">
+            Run duration<svg aria-hidden="true"><use href="#clock" /></svg>
+          </div>
+          <div class="metric-value" id="metricElapsed">—</div>
+          <div class="metric-detail" id="metricStarted">No run yet</div>
+        </div>
+      </div>
+      <div class="grid dashboard-grid">
+        <section class="panel" id="currentRun" aria-labelledby="runTitle">
+          <div class="panel-head">
+            <div class="heading">
+              <h2 id="runTitle">Active run</h2>
+              <span class="status-badge idle" id="runStatus">Loading</span>
+            </div>
+            <div class="inline">
+              <span class="panel-meta" id="runId"></span
+              ><button id="viewCurrentRunLogs" class="btn subtle" type="button" disabled>
+                <svg aria-hidden="true"><use href="#terminal" /></svg>Full log
               </button>
             </div>
-            <p class="subtitle">Subtitle Synchronization</p>
           </div>
-          <div class="status-indicators">
-            <div class="status-indicator" id="statusIndicator">
-              <div class="status-light" id="statusLight"></div>
-              <div class="status-text">
-                <div class="status-label" id="statusLabel">Loading...</div>
-                <div class="status-paths" id="statusPaths"></div>
+          <div class="run-progress hidden" id="runProgress">
+            <div class="progress-top">
+              <span>Engine progress <strong id="progressPercent">0%</strong></span
+              ><span class="muted" id="progressText"></span>
+            </div>
+            <div
+              class="progress-track"
+              id="progressBar"
+              role="progressbar"
+              aria-label="Engine task progress"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+            </div>
+            <div class="progress-bottom"><span id="progressDetail"></span><span id="engineCount"></span></div>
+          </div>
+          <div class="scroll active-scroll" tabindex="0" role="region" aria-label="Active subtitle files">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Subtitle file</th>
+                  <th scope="col">Current engine</th>
+                  <th scope="col">Engine results</th>
+                  <th scope="col" title="Reported engine durations; excludes the current engine's unfinished work">
+                    Engine time
+                  </th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="filesInProgress">
+                <tr>
+                  <td colspan="5" class="empty-state">Loading current run…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="legend" id="engineLegend"></div>
+          <div class="log-preview">
+            <div class="log-head">
+              <span class="inline"
+                ><span class="dot"></span>LIVE OUTPUT <span id="liveOutputScope">/ all active files</span></span
+              ><button class="btn subtle" id="logToggle" type="button" aria-pressed="false">Pause view</button>
+            </div>
+            <div class="log-lines" id="liveOutput" tabindex="0" aria-label="Live engine output">
+              Waiting for engine output…
+            </div>
+          </div>
+        </section>
+        <aside class="side" aria-label="Library and engine status">
+          <section class="panel">
+            <div class="panel-head">
+              <h2 id="scheduleLabel">Next scheduled scan</h2>
+              <svg aria-hidden="true" class="muted"><use href="#clock" /></svg>
+            </div>
+            <div class="side-body">
+              <div class="tiny muted" id="scheduleDate">Loading schedule…</div>
+              <div class="schedule-value">
+                <span id="scheduleTime">—</span> <span id="scheduleCountdown" class="tiny muted"></span>
+              </div>
+              <div class="tiny muted" id="scheduleDescription"></div>
+              <div class="schedule-foot">
+                <span class="mono quiet" id="scheduleCron"></span><span id="scheduleEnabled"></span>
               </div>
             </div>
-            <div class="schedule-indicator" id="scheduleIndicator">
-              <div class="schedule-icon">⏰</div>
-              <div class="status-text">
-                <div class="status-label" id="scheduleLabel">Loading...</div>
-                <div class="status-paths" id="scheduleTime"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Watched folders</h2>
+              <span class="count" id="folderCount">—</span>
+            </div>
+            <div class="side-body">
+              <div id="watchedPaths" class="muted">Loading folders…</div>
+              <div id="excludedPaths" class="side-note"></div>
+            </div>
+          </section>
+          <section class="panel engine-panel">
+            <div class="panel-head">
+              <h2>Engine results</h2>
+              <span class="panel-meta" id="engineScope">This run</span>
+            </div>
+            <div class="side-body">
+              <table class="engine-summary">
+                <thead>
+                  <tr>
+                    <th scope="col">Engine</th>
+                    <th scope="col">Pass</th>
+                    <th scope="col">Fail</th>
+                    <th scope="col">Skip</th>
+                  </tr>
+                </thead>
+                <tbody id="engineStats"></tbody>
+              </table>
+              <div class="side-note">
+                A file can pass some engines and fail others. Skipped attempts are counted separately.
               </div>
             </div>
+          </section>
+        </aside>
+      </div>
+      <section class="panel lower" id="completedSection" aria-labelledby="resultsTitle">
+        <div class="panel-head">
+          <div class="heading">
+            <h2 id="resultsTitle">Recent file results</h2>
+            <span class="count" id="completedCount">0</span>
+          </div>
+          <div class="toolbar">
+            <label class="search"
+              ><svg aria-hidden="true"><use href="#search-icon" /></svg
+              ><input
+                id="fileSearch"
+                type="search"
+                aria-label="Search recent files"
+                placeholder="Find a subtitle…" /></label
+            ><select id="statusFilter" class="filter" aria-label="Filter file status">
+              <option value="all">All statuses</option>
+              <option value="completed">Completed</option>
+              <option value="skipped">Skipped</option>
+              <option value="error">Failed</option></select
+            ><button id="clearCompleted" class="btn subtle" type="button">Clear list</button>
           </div>
         </div>
-        <div class="controls">
-          <button id="startRun" class="btn btn-primary">▶ Start Full Run</button>
-          <button id="startCustom" class="btn btn-secondary">📁 Scan Specific Path</button>
-          <button id="stopRun" class="btn btn-danger hidden">⏹ Stop Processing</button>
+        <div class="scroll results-scroll" tabindex="0" role="region" aria-label="Recent subtitle results">
+          <table class="results">
+            <thead>
+              <tr>
+                <th scope="col">Subtitle file</th>
+                <th scope="col">Status</th>
+                <th scope="col">Engine results</th>
+                <th scope="col">Details</th>
+                <th scope="col" title="Sum of reported engine durations">Engine time</th>
+                <th scope="col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="completedList"></tbody>
+          </table>
         </div>
-      </header>
-
-      <section id="currentRun" class="hidden">
-        <div class="section-header">
-          <h2>Currently Processing</h2>
-          <button id="viewCurrentRunLogs" class="btn btn-secondary btn-sm" type="button">📜 Live Run Log</button>
+        <div class="table-foot">
+          <span id="resultCount">Loading recent files…</span
+          ><button class="btn subtle hidden" id="loadMoreResults" type="button">Show more files</button
+          ><span>Details and errors available in file logs</span>
         </div>
-        <div class="progress-wrapper">
-          <div class="progress-bar">
-            <div class="progress-fill" id="progressFill"></div>
+      </section>
+      <section class="panel lower" id="historySection" aria-labelledby="historyTitle">
+        <div class="panel-head">
+          <div class="heading">
+            <h2 id="historyTitle">Run history</h2>
+            <span class="count" id="historyCount">0 runs</span>
           </div>
-          <span class="progress-text" id="progressText">0 / 0</span>
+          <span class="panel-meta"
+            >Engine columns: <span class="green">passed</span> / <span class="red">failed</span> · skips in
+            tooltip</span
+          >
         </div>
-
-        <div id="filesInProgress"></div>
-      </section>
-
-      <section id="completedSection">
-        <div class="section-header">
-          <h2>Completed & Skipped Files</h2>
-          <button id="clearCompleted" class="btn btn-secondary btn-sm">Clear Files</button>
+        <div class="scroll history-scroll" tabindex="0" role="region" aria-label="Run history">
+          <table id="historyTable" class="history">
+            <thead>
+              <tr>
+                <th scope="col">Started</th>
+                <th scope="col">Status</th>
+                <th scope="col">Files to process</th>
+                <th scope="col">Completed</th>
+                <th scope="col">Skipped</th>
+                <th scope="col">Failed</th>
+                <th scope="col" class="eng">ffsubsync</th>
+                <th scope="col" class="eng">autosubsync</th>
+                <th scope="col" class="eng">alass</th>
+                <th scope="col" class="eng">subsync</th>
+                <th scope="col">Duration</th>
+                <th scope="col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="historyBody"></tbody>
+          </table>
         </div>
-        <div id="completedList" class="file-list"></div>
       </section>
-
-      <section id="historySection">
-        <h2>Run History</h2>
-        <div class="engine-key">
-          <span class="key-title">Engine Results Key:</span>
-          <span class="key-item"><span class="engine-pass">1-9</span> = Passed files</span>
-          <span class="key-item"><span class="engine-fail">1-9</span> = Failed files</span>
-          <span class="key-item">Engines: <strong>F</strong>=ffsubsync, <strong>Au</strong>=autosubsync, <strong>Al</strong>=alass, <strong>S</strong>=subsync</span>
-        </div>
-        <table id="historyTable">
-          <thead>
-            <tr>
-              <th>Start Time</th>
-              <th>Status</th>
-              <th>Files</th>
-              <th>Completed</th>
-              <th>Skipped</th>
-              <th>Failed</th>
-              <th>F</th>
-              <th>Au</th>
-              <th>Al</th>
-              <th>S</th>
-              <th>Duration</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="historyBody"></tbody>
-        </table>
-      </section>
-    </div>
-
-    <div id="logsModal" class="modal hidden">
+      <footer>
+        <span>SubSyncArr-Ng / Subtitle synchronization</span
+        ><span>Original subtitles are preserved unless replacement is enabled.</span>
+      </footer>
+    </main>
+    <div id="logsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="runLogsTitle">
       <div class="modal-content logs-modal">
         <div class="modal-header">
-          <h3>Run Logs</h3>
-          <button id="closeLogsModal" class="btn-close">&times;</button>
+          <h3 id="runLogsTitle">Run logs</h3>
+          <button id="closeLogsModal" class="btn-close" type="button" aria-label="Close dialog">&times;</button>
         </div>
         <pre id="logsContent" class="logs-content"></pre>
         <div class="modal-actions">
-          <button id="copyLogs" class="btn btn-secondary">📋 Copy to Clipboard</button>
+          <button id="copyLogs" class="btn btn-secondary">Copy to clipboard</button>
           <button id="closeLogsButton" class="btn btn-primary">Close</button>
         </div>
       </div>
     </div>
 
-    <div id="fileLogsModal" class="modal hidden">
+    <div id="fileLogsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="fileLogsTitle">
       <div class="modal-content file-logs-modal">
         <div class="modal-header">
           <h3 id="fileLogsTitle">File Log</h3>
-          <button id="closeFileLogsModal" class="btn-close">&times;</button>
+          <button id="closeFileLogsModal" class="btn-close" type="button" aria-label="Close dialog">&times;</button>
         </div>
         <div id="fileLogsMeta" class="file-logs-meta"></div>
         <div id="fileLogsEngines" class="file-logs-engines"></div>
         <div class="file-logs-output-header">Execution & Engine Output</div>
         <pre id="fileLogsContent" class="logs-content file-logs-pre"></pre>
         <div class="modal-actions">
-          <button id="copyFileLogs" class="btn btn-secondary">📋 Copy to Clipboard</button>
+          <button id="copyFileLogs" class="btn btn-secondary">Copy to clipboard</button>
           <button id="closeFileLogsButton" class="btn btn-primary">Close</button>
         </div>
       </div>
     </div>
 
-    <div id="customPathModal" class="modal hidden">
+    <div id="customPathModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="pickerTitle">
       <div class="modal-content picker-modal">
         <div class="modal-header">
-          <h3>Scan Specific Paths</h3>
-          <button id="closeModal" class="btn-close">&times;</button>
+          <h3 id="pickerTitle">Scan specific paths</h3>
+          <button id="closeModal" class="btn-close" type="button" aria-label="Close dialog">&times;</button>
         </div>
         <div class="picker-body">
           <div class="picker-tree" id="folderTree"></div>
@@ -159,11 +374,11 @@
       </div>
     </div>
 
-    <div id="fileListModal" class="modal hidden">
+    <div id="fileListModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="fileListTitle">
       <div class="modal-content file-list-modal">
         <div class="modal-header">
           <h3 id="fileListTitle">Files</h3>
-          <button id="closeFileListModal" class="btn-close">&times;</button>
+          <button id="closeFileListModal" class="btn-close" type="button" aria-label="Close dialog">&times;</button>
         </div>
         <div id="fileListContent" class="file-list-content"></div>
         <div class="modal-actions">
@@ -172,6 +387,7 @@
       </div>
     </div>
 
+    <script src="/dashboard-data.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

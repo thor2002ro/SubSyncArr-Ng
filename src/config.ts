@@ -3,6 +3,15 @@ export interface ScanConfig {
   excludePaths: string[];
 }
 
+export const DEFAULT_ENGINES = ['ffsubsync', 'autosubsync', 'alass', 'subsync'] as const;
+
+export function getEnabledEngines(): string[] {
+  const configured = process.env.INCLUDE_ENGINES?.split(',')
+    .map((engine) => engine.trim())
+    .filter(Boolean);
+  return configured?.length ? configured : [...DEFAULT_ENGINES];
+}
+
 export interface SuffixConfig {
   ffsubsync: string;
   autosubsync: string;

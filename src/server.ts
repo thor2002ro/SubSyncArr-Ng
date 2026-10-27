@@ -5,7 +5,7 @@ import { ProcessingCoordinator } from './coordinator';
 import { StateManager } from './stateManager';
 import { join, resolve as resolvePath } from 'path';
 import * as fs from 'fs';
-import { getScanConfig } from './config';
+import { getEnabledEngines, getScanConfig } from './config';
 import cronstrue from 'cronstrue';
 import parseExpression from 'cron-parser';
 
@@ -55,6 +55,7 @@ export class SubsyncarrPlusServer {
       res.json({
         paths: config.includePaths,
         excludePaths: config.excludePaths,
+        engines: getEnabledEngines(),
         isConfigured: !isDefaultPath,
         schedule: {
           enabled: cronSchedule !== 'disabled',

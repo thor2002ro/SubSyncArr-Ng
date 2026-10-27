@@ -3,6 +3,7 @@ import { SubsyncarrPlusDatabase, Run, FileResult, ProcessedFileRecord } from './
 import { randomUUID } from 'crypto';
 import { LogFileManager } from './logFileManager';
 import * as path from 'path';
+import { getEnabledEngines } from './config';
 
 export class StateManager extends EventEmitter {
   private db: SubsyncarrPlusDatabase;
@@ -36,7 +37,7 @@ export class StateManager extends EventEmitter {
   }
 
   // Run management
-  startRun(totalFiles: number, enabledEngines: string[] = ['ffsubsync', 'autosubsync', 'alass'], alreadySyncedCount: number = 0): string {
+  startRun(totalFiles: number, enabledEngines: string[] = getEnabledEngines(), alreadySyncedCount: number = 0): string {
     const runId = randomUUID();
     this.db.createRun(runId, totalFiles);
 
@@ -111,7 +112,13 @@ export class StateManager extends EventEmitter {
     this.db.createSkippedFileResults(runId, filePaths);
   }
 
-  updateFileStatus(runId: string, filePath: string, status: FileResult['status'], currentEngine?: string | null, videoPath?: string | null): void {
+  updateFileStatus(
+    runId: string,
+    filePath: string,
+    status: FileResult['status'],
+    currentEngine?: string | null,
+    videoPath?: string | null,
+  ): void {
     const updates: Partial<FileResult> = { status };
     if (currentEngine !== undefined) {
       updates.current_engine = currentEngine;

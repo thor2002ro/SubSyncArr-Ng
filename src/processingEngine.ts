@@ -1,6 +1,6 @@
 import EventEmitter from 'events';
 import { existsSync, renameSync, unlinkSync } from 'fs';
-import { ScanConfig, getScanConfig, getSuffixConfig } from './config';
+import { ScanConfig, getEnabledEngines, getScanConfig, getSuffixConfig } from './config';
 import { findAllSrtFiles } from './findAllSrtFiles';
 import { findMatchingVideoFile } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
@@ -25,7 +25,7 @@ export class ProcessingEngine extends EventEmitter {
   constructor() {
     super();
     this.maxConcurrent = parseInt(process.env.MAX_CONCURRENT_SYNC_TASKS || '1', 10);
-    this.enabledEngines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
+    this.enabledEngines = getEnabledEngines();
     this.maxLogBufferSize = parseInt(process.env.LOG_BUFFER_SIZE || '1000', 10);
     this.replaceOriginalRequested = process.env.REPLACE_ORIGINAL_SUBTITLE === 'true';
     this.replaceOriginalSubtitle = this.replaceOriginalRequested && this.enabledEngines.length === 1;

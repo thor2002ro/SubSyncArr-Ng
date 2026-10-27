@@ -1,6 +1,6 @@
 import { readdir } from 'fs/promises';
 import { basename, extname, join } from 'path';
-import { getSuffixConfig, ScanConfig } from './config';
+import { getEnabledEngines, getSuffixConfig, ScanConfig } from './config';
 import { buildOutputPath, isNonEmptyFile } from './helpers';
 
 function isAlreadySynced(srtPath: string, engines: string[]): boolean {
@@ -36,8 +36,11 @@ export interface ScanResult {
 }
 
 export async function findAllSrtFiles(config: ScanConfig): Promise<ScanResult> {
-  const engines = process.env.INCLUDE_ENGINES?.split(',') || ['ffsubsync', 'autosubsync', 'alass'];
-  const languages = process.env.SYNC_LANGUAGES?.split(',').map((l) => l.trim()).filter(Boolean) || [];
+  const engines = getEnabledEngines();
+  const languages =
+    process.env.SYNC_LANGUAGES?.split(',')
+      .map((l) => l.trim())
+      .filter(Boolean) || [];
   const files: string[] = [];
   const skippedFiles: string[] = [];
   let skippedCount = 0;
