@@ -1,7 +1,7 @@
-import { buildOutputPath, execPromise, ProcessingResult } from './helpers';
-import { existsSync, unlinkSync } from 'fs';
+import { buildOutputPath, ProcessingResult } from './helpers';
 import { getSuffixConfig, getAlassExtraArgs } from './config';
-import { withUtf8Subtitle } from './subtitleEncoding';
+import { parseCliArguments } from './cliArguments';
+import { runSyncEngine } from './runSyncEngine';
 
 export async function generateAlassSubtitles(
   srtPath: string,
@@ -9,61 +9,8 @@ export async function generateAlassSubtitles(
   onLog?: (chunk: string) => void,
 ): Promise<ProcessingResult> {
   const outputPath = buildOutputPath(srtPath, getSuffixConfig().alass);
-
-  const exists = existsSync(outputPath);
-  if (exists) {
-    return {
-      success: true,
-      message: `Skipping ${outputPath} - already processed`,
-      skipped: true,
-    };
-  }
-
-  try {
-    return await withUtf8Subtitle(srtPath, onLog, async (inputPath) => {
-      const extraArgs = getAlassExtraArgs();
-      const command = `alass "${videoPath}" "${inputPath}" "${outputPath}"${extraArgs ? ` ${extraArgs}` : ''}`;
-      console.log(`${new Date().toLocaleString()} Processing: ${command}`);
-      const { stdout, stderr } = await execPromise(command, undefined, onLog);
-      return {
-        success: true,
-        message: `Successfully processed: ${outputPath}`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
-      };
-    });
-  } catch (error) {
-    // Clean up partial or bad output file written before failure
-    if (existsSync(outputPath)) {
-      try {
-        unlinkSync(outputPath);
-      } catch {
-        // Ignore unlink error
-      }
-    }
-
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const isTimeout = errorMessage.includes('SIGTERM') || errorMessage.toLowerCase().includes('timed out');
-
-    // Extract stdout/stderr from error if available
-    const execError = error as { stdout?: string; stderr?: string };
-    const stdout = execError.stdout || '';
-    const stderr = execError.stderr || '';
-
-    if (isTimeout) {
-      return {
-        success: false,
-        message: `Timeout: ${outputPath} took longer than allowed timeout`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
-      };
-    }
-
-    return {
-      success: false,
-      message: `Error processing ${outputPath}: ${errorMessage}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    };
-  }
+  return runSyncEngine(srtPath, outputPath, onLog, (inputPath) => ({
+    file: 'alass',
+    args: [videoPath, inputPath, outputPath, ...parseCliArguments(getAlassExtraArgs())],
+  }));
 }

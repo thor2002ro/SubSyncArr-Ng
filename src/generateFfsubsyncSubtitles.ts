@@ -1,7 +1,7 @@
-import { buildOutputPath, execPromise, ProcessingResult } from './helpers';
-import { existsSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { buildOutputPath, ProcessingResult } from './helpers';
 import { getSuffixConfig } from './config';
-import { withUtf8Subtitle } from './subtitleEncoding';
+import { runSyncEngine } from './runSyncEngine';
 
 export async function generateFfsubsyncSubtitles(
   srtPath: string,
@@ -9,61 +9,8 @@ export async function generateFfsubsyncSubtitles(
   onLog?: (chunk: string) => void,
 ): Promise<ProcessingResult> {
   const outputPath = buildOutputPath(srtPath, getSuffixConfig().ffsubsync);
-
-  // Check if synced subtitle already exists
-  const exists = existsSync(outputPath);
-  if (exists) {
-    return {
-      success: true,
-      message: `Skipping ${outputPath} - already processed`,
-      skipped: true,
-    };
-  }
-
-  try {
-    return await withUtf8Subtitle(srtPath, onLog, async (inputPath) => {
-      const command = `ffsubsync "${videoPath}" -i "${inputPath}" -o "${outputPath}"`;
-      console.log(`${new Date().toLocaleString()} Processing: ${command}`);
-      const { stdout, stderr } = await execPromise(command, undefined, onLog);
-      return {
-        success: true,
-        message: `Successfully processed: ${outputPath}`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
-      };
-    });
-  } catch (error) {
-    // Clean up partial or bad output file written before failure
-    if (existsSync(outputPath)) {
-      try {
-        unlinkSync(outputPath);
-      } catch {
-        // Ignore unlink error
-      }
-    }
-
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const isTimeout = errorMessage.includes('SIGTERM') || errorMessage.toLowerCase().includes('timed out');
-
-    // Extract stdout/stderr from error if available
-    const execError = error as { stdout?: string; stderr?: string };
-    const stdout = execError.stdout || '';
-    const stderr = execError.stderr || '';
-
-    if (isTimeout) {
-      return {
-        success: false,
-        message: `Timeout: ${outputPath} took longer than allowed timeout`,
-        stdout: stdout || undefined,
-        stderr: stderr || undefined,
-      };
-    }
-
-    return {
-      success: false,
-      message: `Error processing ${outputPath}: ${errorMessage}`,
-      stdout: stdout || undefined,
-      stderr: stderr || undefined,
-    };
-  }
+  return runSyncEngine(srtPath, outputPath, onLog, (inputPath) => ({
+    file: process.env.FFSUBSYNC_PYTHON || '/opt/ffsubsync/bin/python',
+    args: [join(__dirname, 'ffsubsyncBridge.py'), videoPath, '-i', inputPath, '-o', outputPath],
+  }));
 }

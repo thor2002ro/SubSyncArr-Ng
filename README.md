@@ -46,6 +46,7 @@ No single subtitle synchronization algorithm works perfectly for every scenario 
 - **Best for**: Standard movie releases, linear delays (e.g. subtitles starting 5 seconds too late), and frame-rate conversions (e.g. 23.976 fps to 25.000 fps).
 - **Speed**: Extremely fast (typically 5–15 seconds).
 - **Output**: `<filename>.<lang>.ffsubsync.srt`
+- **Success check**: The app checks ffsubsync's Python API result as well as the output file. An upstream CLI exit code of zero alone can also mean synchronization failed. For non-Docker installs, set `FFSUBSYNC_PYTHON` to the Python interpreter in your ffsubsync environment.
 
 ### 2. `autosubsync` (Acoustic Feature & Speech Detection)
 - **Technology**: Python + NumPy/SciPy + Pretrained Neural Acoustic Model.
@@ -218,9 +219,10 @@ Open your browser at **`http://localhost:3030`** (or your server's IP address on
 | `AUTOSUBSYNC_PARALLELISM` | `1` | Worker threads for autosubsync (set to 1 to prevent OOM on 4K files) |
 | `AUTOSUBSYNC_SKIP_FORCED` | `true` | Skip autosubsync on `.forced.srt` files (handled by ffsubsync and alass) |
 | `FFSUBSYNC_SUFFIX` | `ffsubsync` | Custom suffix for ffsubsync outputs (e.g. `movie.en.ffsubsync.srt`) |
+| `FFSUBSYNC_PYTHON` | `/opt/ffsubsync/bin/python` | Python interpreter whose environment contains ffsubsync; the app invokes its API through the bundled bridge |
 | `AUTOSUBSYNC_SUFFIX` | `autosubsync` | Custom suffix for autosubsync outputs |
 | `ALASS_SUFFIX` | `alass` | Custom suffix for alass outputs |
-| `ALASS_EXTRA_ARGS` | _(none)_ | Extra CLI flags passed directly to `alass` (e.g. `--disable-fps-guessing`, `--split-penalty 15`, `--no-split`) |
+| `ALASS_EXTRA_ARGS` | _(none)_ | Extra CLI flags parsed with quotes/escapes (e.g. `--disable-fps-guessing`, `--split-penalty 15`, `--no-split`). Variables, command substitutions, and shell operators remain literal arguments |
 | `SUBSYNC_SUFFIX` | `subsync` | Custom suffix for SubSync outputs |
 | `SUBSYNC_SPEECH_ENGINE` | `sphinx` | Speech backend: `sphinx`, `vosk`, or `whisper`; Docker bundles `sphinx` |
 | `SUBSYNC_SUB_LANG` | _(automatic)_ | Override subtitle language; otherwise use filename or upstream detection |
@@ -241,6 +243,11 @@ engine is disabled. Custom suffixes are recognized only for enabled engines, so
 an inactive custom suffix cannot hide original language-tagged subtitles. Before
 disabling an engine with a custom suffix, move or exclude its generated files if
 they should remain outside later scans.
+
+All engines require a regular, nonempty output before reporting success or
+skipping an existing result. Empty outputs are retried even when input
+fingerprints match a previous run. Failed/partial outputs are removed, and media
+paths are passed as literal process arguments.
 
 ### Database & Retention Settings
 

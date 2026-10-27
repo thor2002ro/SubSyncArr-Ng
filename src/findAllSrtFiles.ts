@@ -1,6 +1,5 @@
 import { readdir } from 'fs/promises';
 import { basename, extname, join } from 'path';
-import { existsSync } from 'fs';
 import { getSuffixConfig, ScanConfig } from './config';
 import { buildOutputPath, isNonEmptyFile } from './helpers';
 
@@ -15,7 +14,7 @@ function isAlreadySynced(srtPath: string, engines: string[]): boolean {
     }
     const suffix = suffixConfig[engine as keyof typeof suffixConfig] || engine;
     const outputPath = buildOutputPath(srtPath, suffix);
-    return engine === 'subsync' ? isNonEmptyFile(outputPath) : existsSync(outputPath);
+    return isNonEmptyFile(outputPath);
   });
 }
 

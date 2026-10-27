@@ -7,10 +7,10 @@
   },
   "scripts": {
     "clean": "rm -rf dist; rm -rf node_modules; rm -rf build/* && rm -rf build",
-    "build": "tsc",
+    "build": "tsc && cp src/ffsubsyncBridge.py dist/ffsubsyncBridge.py",
     "start": "node dist/index-server.js",
     "start:legacy": "node dist/index.js",
-    "watch": "tsc -w",
+    "watch": "mkdir -p dist && cp src/ffsubsyncBridge.py dist/ffsubsyncBridge.py && tsc -w",
     "lint": "eslint .",
     "lint:fix": "prettier --write \"**/*\" && npm run lint -- --fix",
     "test": "jest",

@@ -8,7 +8,7 @@ import { generateAutosubsyncSubtitles } from './generateAutosubsyncSubtitles';
 import { generateAlassSubtitles } from './generateAlassSubtitles';
 import { generateSubsyncSubtitles } from './generateSubsyncSubtitles';
 import { StateManager } from './stateManager';
-import { buildOutputPath } from './helpers';
+import { buildOutputPath, isNonEmptyFile } from './helpers';
 import { computeVideoFingerprint, computeSrtFingerprint } from './fingerprint';
 
 export class ProcessingEngine extends EventEmitter {
@@ -83,7 +83,9 @@ export class ProcessingEngine extends EventEmitter {
 
     const { files: srtFiles, skippedCount, skippedFiles } = await findAllSrtFiles(scanConfig);
     this.emit('run:files_found', srtFiles, skippedCount, skippedFiles);
-    this.log(`[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files to process (${skippedCount} already synced)`);
+    this.log(
+      `[${new Date().toISOString()}] Found ${srtFiles.length} subtitle files to process (${skippedCount} already synced)`,
+    );
 
     // Keep up to maxConcurrent files in flight at all times: each worker pulls the next
     // file off the shared queue as soon as it finishes, instead of waiting for an entire
@@ -91,9 +93,7 @@ export class ProcessingEngine extends EventEmitter {
     this.log(`[${new Date().toISOString()}] Processing with concurrency: ${this.maxConcurrent}`);
     this.log(`[${new Date().toISOString()}] Enabled engines: ${this.enabledEngines.join(', ')}`);
     if (this.replaceOriginalRequested && !this.replaceOriginalSubtitle) {
-      this.log(
-        `[${new Date().toISOString()}] REPLACE_ORIGINAL_SUBTITLE ignored: exactly one engine must be enabled`,
-      );
+      this.log(`[${new Date().toISOString()}] REPLACE_ORIGINAL_SUBTITLE ignored: exactly one engine must be enabled`);
     }
 
     let nextIndex = 0;
@@ -212,8 +212,15 @@ export class ProcessingEngine extends EventEmitter {
       if (processedRecord) {
         const vFingerprint = await getVideoFingerprint();
         const sFingerprint = await getSrtFingerprint();
+        const suffixConfig = getSuffixConfig();
+        const suffix = suffixConfig[engine as keyof typeof suffixConfig] || engine;
+        const outputPath = buildOutputPath(srtPath, suffix);
+        // A present but invalid output needs repair. A missing output can have
+        // been consumed by Bazarr, so retain the fingerprint anti-loop rule.
+        const invalidOutput = existsSync(outputPath) && !isNonEmptyFile(outputPath);
 
         if (
+          !invalidOutput &&
           vFingerprint === processedRecord.video_fingerprint &&
           (!processedRecord.srt_fingerprint || sFingerprint === processedRecord.srt_fingerprint)
         ) {
