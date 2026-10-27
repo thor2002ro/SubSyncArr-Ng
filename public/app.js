@@ -955,6 +955,7 @@ class SubsyncarrPlusClient {
       ffsubsync: { pass: 0, fail: 0 },
       autosubsync: { pass: 0, fail: 0 },
       alass: { pass: 0, fail: 0 },
+      subsync: { pass: 0, fail: 0 },
     };
 
     files.forEach((file) => {
@@ -1024,6 +1025,7 @@ class SubsyncarrPlusClient {
           ${this.renderEngineCell(engineStats.ffsubsync)}
           ${this.renderEngineCell(engineStats.autosubsync)}
           ${this.renderEngineCell(engineStats.alass)}
+          ${this.renderEngineCell(engineStats.subsync)}
           <td>${duration}</td>
           <td>
             <button class="btn-view-logs" onclick="client.viewLogs('${run.id}')">
@@ -1036,7 +1038,7 @@ class SubsyncarrPlusClient {
       .join('');
 
     document.getElementById('historyBody').innerHTML =
-      html || '<tr><td colspan="11" class="no-data">No runs yet</td></tr>';
+      html || '<tr><td colspan="12" class="no-data">No runs yet</td></tr>';
   }
 
   basename(path) {

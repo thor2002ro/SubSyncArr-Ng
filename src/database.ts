@@ -23,7 +23,7 @@ export interface FileResult {
   video_path: string | null;
   status: 'pending' | 'processing' | 'completed' | 'skipped' | 'error';
   current_engine: string | null;
-  engines: string; // JSON stringified { ffsubsync?: {...}, autosubsync?: {...}, alass?: {...} }
+  engines: string; // JSON stringified engine results, keyed by engine name
   created_at: number;
   updated_at: number;
 }

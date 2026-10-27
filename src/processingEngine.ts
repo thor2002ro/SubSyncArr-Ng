@@ -6,6 +6,7 @@ import { findMatchingVideoFile } from './findMatchingVideoFile';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
 import { generateAutosubsyncSubtitles } from './generateAutosubsyncSubtitles';
 import { generateAlassSubtitles } from './generateAlassSubtitles';
+import { generateSubsyncSubtitles } from './generateSubsyncSubtitles';
 import { StateManager } from './stateManager';
 import { buildOutputPath } from './helpers';
 import { computeVideoFingerprint, computeSrtFingerprint } from './fingerprint';
@@ -145,7 +146,7 @@ export class ProcessingEngine extends EventEmitter {
           }
           // Also remove any previously synced variants for this orphaned srt if they exist
           const suffixConfig = getSuffixConfig();
-          for (const engine of ['ffsubsync', 'autosubsync', 'alass']) {
+          for (const engine of Object.keys(suffixConfig)) {
             const suffix = suffixConfig[engine as keyof typeof suffixConfig] || engine;
             const syncedPath = buildOutputPath(srtPath, suffix);
             if (existsSync(syncedPath)) {
@@ -278,6 +279,9 @@ export class ProcessingEngine extends EventEmitter {
             break;
           case 'alass':
             result = await generateAlassSubtitles(srtPath, videoPath, onEngineLog);
+            break;
+          case 'subsync':
+            result = await generateSubsyncSubtitles(srtPath, videoPath, onEngineLog);
             break;
           default:
             continue;

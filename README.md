@@ -1,6 +1,6 @@
 # 🧬 SubSyncArr-Ng
 
-**SubSyncArr-Ng** (Next-Generation) is an automated subtitle synchronization suite designed to run seamlessly in Docker. It continuously monitors your movie and TV show libraries, identifies out-of-sync subtitles, and synchronizes them with precision using three complementary synchronization engines: **ffsubsync**, **autosubsync**, and **alass**.
+**SubSyncArr-Ng** (Next-Generation) is an automated subtitle synchronization suite designed to run seamlessly in Docker. It continuously monitors your movie and TV show libraries, identifies out-of-sync subtitles, and synchronizes them using **ffsubsync**, **autosubsync**, **alass**, and the optional speech recognition engine **SubSync**.
 
 SubSyncArr-Ng is non-destructive: it preserves your original subtitles untouched and creates distinct synchronized copies for each engine, providing full redundancy and flexibility in players like Plex, Jellyfin, Emby, and Kodi.
 
@@ -21,9 +21,9 @@ SubSyncArr-Ng is non-destructive: it preserves your original subtitles untouched
 
 ---
 
-## ⚙️ Why 3 Different Sync Engines? How Do They Work?
+## ⚙️ Synchronization Engines
 
-No single subtitle synchronization algorithm works perfectly for every scenario (movies, TV shows, PAL/NTSC frame rate changes, commercial breaks, noisy audio, or sparse forced dialogue). For this reason, SubSyncArr-Ng runs **three complementary engines**:
+No single subtitle synchronization algorithm works perfectly for every scenario (movies, TV shows, PAL/NTSC frame rate changes, commercial breaks, noisy audio, or sparse forced dialogue). SubSyncArr-Ng enables **three complementary engines by default**, with SubSync available as an additional option:
 
 ```
                   ┌─────────────────┐
@@ -61,6 +61,38 @@ No single subtitle synchronization algorithm works perfectly for every scenario 
 - **Speed**: Blazing fast native Rust execution (typically 3–10 seconds).
 - **Output**: `<filename>.<lang>.alass.srt`
 
+### 4. `subsync` (Subtitle Speech Synchronizer, optional)
+
+- **Source**: [neck0l/subsync](https://github.com/neck0l/subsync), the modernized SubSync fork, pinned in the Docker build.
+- **How it works**: Recognizes words in the video's audio and correlates them with subtitle words to correct delay and pace. Different subtitle/audio languages require an available dictionary from upstream.
+- **Output**: `<filename>.<lang>.subsync.srt`, always UTF-8. Legacy-encoded input is normalized temporarily; the original source is preserved unless replacement is explicitly enabled.
+- **Enable**: Set `INCLUDE_ENGINES=subsync` to use it alone, or append `subsync` to your existing list. The existing default list remains unchanged.
+- **Languages**: Subtitle language comes from the filename (`movie.en.srt`, `movie.ron.forced.srt`) or `SUBSYNC_SUB_LANG`. Reference language comes from the selected audio stream's metadata or `SUBSYNC_REF_LANG`. Set the latter when audio metadata is missing or wrong. These settings accept upstream's two- or three-letter language codes, for example `en` / `eng`.
+- **Language compatibility**: Common ISO aliases are normalized to upstream's model keys (`ron` → `rum`, `deu` → `ger`, `fra` → `fre`). Explicit unsupported language overrides fail clearly. The fork's language table and available assets limit support; selecting a speech backend does not add missing language entries.
+- **Audio selection**: Uses the first audio stream. `SUBSYNC_REF_STREAM` selects an explicit **1-based absolute container stream number**, counting video and other streams too. Without `SUBSYNC_REF_LANG`, ffprobe reads that stream's language and normalizes it to the upstream model key. Missing or unsupported metadata fails with instructions to set `SUBSYNC_REF_LANG`. This override sets the language of the selected stream; it does not choose a different audio track.
+- **Models and dictionaries**: Downloaded automatically on first use. Internet access is needed for uncached assets; missing languages/models/dictionaries fail with engine logs. Docker persists this cache at `/app/data/subsync`, covered by the existing `/app/data` volume. Allow time for downloads within `SYNC_ENGINE_TIMEOUT_MS`.
+- **Concurrency and timeout**: `SUBSYNC_JOBS=1` limits internal decoder workers. SubSync CLI calls sharing a cache run one at a time under an OS file lock, protecting models during download and use; other engines can still run concurrently. The engine timeout includes metadata probing and lock waiting. A timeout releases the lock automatically.
+- **Speech backend**: The Docker image bundles PocketSphinx (`sphinx`). `SUBSYNC_SPEECH_ENGINE=vosk` or `whisper` requires a separately built SubSync CLI with the corresponding native backend. Setting the variable alone does not install it.
+
+Example for Romanian subtitles with English audio:
+
+```yaml
+environment:
+  - INCLUDE_ENGINES=subsync
+  - SUBSYNC_SUB_LANG=ron
+  - SUBSYNC_REF_LANG=eng
+```
+
+For a non-Docker installation, build the pinned fork from source with its FFmpeg
+and PocketSphinx development dependencies (`libavdevice-dev`, `libavformat-dev`,
+`libavfilter-dev`, `libavcodec-dev`, `libswresample-dev`, `libswscale-dev`,
+`libavutil-dev`, `libpocketsphinx-dev`, `libsphinxbase-dev`, `python3-dev`,
+`pkg-config`, and a C++ compiler on Debian Bookworm). Also install `ffmpeg` and
+`util-linux` for the ffprobe and flock runtime commands. Install SubSync in a Python venv
+and put that venv's `bin` directory on the application's `PATH`. The Dockerfile
+contains the pinned build recipe. Check `subsync --cli --help` before enabling it;
+installing an unrelated package named `subsync` will not provide this engine.
+
 ---
 
 ## 🔄 What Happens During a Scan? (The Workflow)
@@ -80,6 +112,41 @@ No single subtitle synchronization algorithm works perfectly for every scenario 
 ---
 
 ## 🚀 Quick Start
+
+### Git source builds
+
+All four engines are built inside dedicated Docker builder stages. The runtime
+image contains installed Python environments and the compiled Rust executable;
+the repository's old `bin/alass` executable is excluded from the build context.
+
+The defaults pin the latest upstream default-branch commits checked on
+**2026-10-27**:
+
+| Engine | Upstream | Commit | Docker target |
+| :--- | :--- | :--- | :--- |
+| ffsubsync | [smacke/ffsubsync](https://github.com/smacke/ffsubsync) | `de310ac6944b8260431a48ee741e7063cec49b0f` | `ffsubsync-builder` |
+| autosubsync | [oseiskar/autosubsync](https://github.com/oseiskar/autosubsync) | `b392da2713aafe6de83e08e2571198988612febc` | `autosubsync-builder` |
+| alass | [kaegi/alass](https://github.com/kaegi/alass) | `874f02d9577182752a0f969b6d6b98fd65bdf1fc` | `alass-builder` |
+| SubSync | [neck0l/subsync](https://github.com/neck0l/subsync) | `1ff7bc91b87fe6644250323b8add790f8a9df2f2` | `subsync-builder` |
+
+To build an individual engine container for inspection, use its target:
+
+```bash
+docker build --target alass-builder -t subsyncarr-alass-builder .
+```
+
+Full image builds use all four stages automatically. Installed revisions are
+recorded in `/app/engine-sources.json` and image labels named
+`io.subsyncarr.<engine>.revision`. Builds use the pinned snapshot; they do not
+silently change to newer commits when a Docker cache is reused. Refresh the
+`FFSUBSYNC_COMMIT`, `AUTOSUBSYNC_COMMIT`, `ALASS_COMMIT`, or `SUBSYNC_COMMIT`
+build argument with a full upstream commit SHA to update an engine.
+
+Autosubsync omits its pretrained model from Git. Its code is built from the Git
+checkout with the upstream release's checksum-verified JSON model bundled as
+data; model provenance and license are in `assets/autosubsync/`. Python/Rust
+dependencies come from their package registries, and FFmpeg/PocketSphinx runtime
+libraries come from Debian Bookworm.
 
 ### Using Docker Compose
 
@@ -154,12 +221,26 @@ Open your browser at **`http://localhost:3030`** (or your server's IP address on
 | `AUTOSUBSYNC_SUFFIX` | `autosubsync` | Custom suffix for autosubsync outputs |
 | `ALASS_SUFFIX` | `alass` | Custom suffix for alass outputs |
 | `ALASS_EXTRA_ARGS` | _(none)_ | Extra CLI flags passed directly to `alass` (e.g. `--disable-fps-guessing`, `--split-penalty 15`, `--no-split`) |
+| `SUBSYNC_SUFFIX` | `subsync` | Custom suffix for SubSync outputs |
+| `SUBSYNC_SPEECH_ENGINE` | `sphinx` | Speech backend: `sphinx`, `vosk`, or `whisper`; Docker bundles `sphinx` |
+| `SUBSYNC_SUB_LANG` | _(automatic)_ | Override subtitle language; otherwise use filename or upstream detection |
+| `SUBSYNC_REF_LANG` | _(audio metadata)_ | Override reference audio language, e.g. `eng` |
+| `SUBSYNC_REF_STREAM` | _(first audio)_ | Select a 1-based absolute container stream number |
+| `SUBSYNC_FFPROBE_PATH` | `/usr/bin/ffprobe` | Direct ffprobe executable used for metadata; bypasses the bundled wrapper so timeouts terminate the real probe |
+| `SUBSYNC_JOBS` | `1` | Positive integer limiting internal SubSync decoder workers |
+| `SUBSYNC_LOCK_PATH` | `~/.config/subsync/.subsyncarr.lock` | Linux cache lock file; if overriding, all app instances sharing a model cache must use the same file |
 | `SYNC_ENGINE_TIMEOUT_MS` | `1800000` | Engine timeout in milliseconds (default 30 minutes) |
 | `WEB_PORT` | `3000` | Internal port for the Web UI (mapped to host port via docker-compose) |
 | `WEB_HOST` | `0.0.0.0` | Host interface for Web UI binding |
 | `PUID` | `1000` | User ID for file permissions |
 | `PGID` | `100` | Group ID for file permissions |
 | `TZ` | `Etc/UTC` | Timezone for logs and cron scheduling (e.g. `Europe/Rome`) |
+
+Standard engine output suffixes are excluded from discovery even when that
+engine is disabled. Custom suffixes are recognized only for enabled engines, so
+an inactive custom suffix cannot hide original language-tagged subtitles. Before
+disabling an engine with a custom suffix, move or exclude its generated files if
+they should remain outside later scans.
 
 ### Database & Retention Settings
 
@@ -197,7 +278,7 @@ The Web UI provides complete real-time monitoring and control:
    - **`Clear Files` Button**: Cleans completed files from the UI display without altering disk data.
 
 4. **Run History**:
-   - Comprehensive historical table of past runs with file counts, engine pass/fail breakdown (**F**, **Au**, **Al**), duration, and full run log viewer.
+   - Comprehensive historical table of past runs with file counts, engine pass/fail breakdown (**F**, **Au**, **Al**, **S**), duration, and full run log viewer.
 
 ---
 

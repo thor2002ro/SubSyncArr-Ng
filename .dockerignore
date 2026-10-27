@@ -1,5 +1,6 @@
 # .dockerignore
 node_modules
+bin/alass
 vendor
 .git
 test-srts

@@ -1,5 +1,15 @@
 import { spawn } from 'child_process';
 import { basename, dirname, join } from 'path';
+import { statSync } from 'fs';
+
+export function isNonEmptyFile(path: string): boolean {
+  try {
+    const stat = statSync(path);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
 
 export function buildOutputPath(srtPath: string, suffix: string): string {
   const directory = dirname(srtPath);
@@ -18,7 +28,7 @@ export interface ProcessingResult {
   skipped?: boolean;
 }
 
-function getTimeoutMs(): number {
+export function getTimeoutMs(): number {
   // Support both SYNC_TIMEOUT (seconds) and SYNC_ENGINE_TIMEOUT_MS (milliseconds)
   const seconds = process.env.SYNC_TIMEOUT;
   if (seconds) {
@@ -37,10 +47,12 @@ export function execPromise(
   command: string,
   timeoutMs?: number,
   onLog?: (chunk: string) => void,
+  args?: string[],
 ): Promise<{ stdout: string; stderr: string }> {
   const timeout = timeoutMs ?? getTimeoutMs();
   return new Promise((resolve, reject) => {
-    const child = spawn(command, { shell: true });
+    // Argument arrays bypass the shell so media paths remain literal.
+    const child = spawn(command, args || [], { shell: args === undefined, env: process.env });
     let stdout = '';
     let stderr = '';
     let isTimedOut = false;
@@ -74,7 +86,9 @@ export function execPromise(
     child.on('close', (code) => {
       clearTimeout(timer);
       if (isTimedOut) {
-        reject(new Error(`Timed out after ${timeout / 1000}s: ${command}`));
+        const error = new Error(`Timed out after ${timeout / 1000}s: ${command}`);
+        Object.assign(error, { stdout, stderr });
+        reject(error);
       } else if (code !== 0) {
         const error = new Error(`Command failed: ${command}\n${stderr || stdout}`);
         (error as Error & { code?: number | null; stdout?: string; stderr?: string }).code = code;

@@ -2,7 +2,7 @@ import { readdir } from 'fs/promises';
 import { basename, extname, join } from 'path';
 import { existsSync } from 'fs';
 import { getSuffixConfig, ScanConfig } from './config';
-import { buildOutputPath } from './helpers';
+import { buildOutputPath, isNonEmptyFile } from './helpers';
 
 function isAlreadySynced(srtPath: string, engines: string[]): boolean {
   const suffixConfig = getSuffixConfig();
@@ -15,7 +15,7 @@ function isAlreadySynced(srtPath: string, engines: string[]): boolean {
     }
     const suffix = suffixConfig[engine as keyof typeof suffixConfig] || engine;
     const outputPath = buildOutputPath(srtPath, suffix);
-    return existsSync(outputPath);
+    return engine === 'subsync' ? isNonEmptyFile(outputPath) : existsSync(outputPath);
   });
 }
 
@@ -48,9 +48,12 @@ export async function findAllSrtFiles(config: ScanConfig): Promise<ScanResult> {
   }
 
   const suffixConfig = getSuffixConfig();
-  const syncedSuffixes = engines.map(
-    (engine) => `.${suffixConfig[engine as keyof typeof suffixConfig] || engine}.`,
-  );
+  // Standard output markers remain recognizable after changing engines.
+  // An inactive custom suffix might be a source language tag (e.g. eng).
+  const syncedSuffixes = [
+    ...Object.keys(suffixConfig),
+    ...engines.map((engine) => suffixConfig[engine as keyof typeof suffixConfig] || engine),
+  ].map((suffix) => `.${suffix}.`);
 
   async function scan(directory: string): Promise<void> {
     // Check if this directory should be excluded

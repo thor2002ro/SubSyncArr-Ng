@@ -11,6 +11,7 @@ if [ "$(id -u node)" != "$PUID" ] || [ "$(id -g node)" != "$PGID" ]; then
 fi
 
 # Always fix ownership on /app/data — it's a mounted volume with unpredictable ownership
+mkdir -p /app/data/subsync
 chown -R node:node /app/data
 
 exec gosu node "$@"

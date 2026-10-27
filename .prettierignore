@@ -9,3 +9,4 @@ dist
 Dockerfile
 .env*
 /app
+assets/autosubsync/trained-model.json

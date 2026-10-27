@@ -7,6 +7,7 @@ export interface SuffixConfig {
   ffsubsync: string;
   autosubsync: string;
   alass: string;
+  subsync: string;
 }
 
 export function getSuffixConfig(): SuffixConfig {
@@ -14,6 +15,7 @@ export function getSuffixConfig(): SuffixConfig {
     ffsubsync: process.env.FFSUBSYNC_SUFFIX || 'ffsubsync',
     autosubsync: process.env.AUTOSUBSYNC_SUFFIX || 'autosubsync',
     alass: process.env.ALASS_SUFFIX || 'alass',
+    subsync: process.env.SUBSYNC_SUFFIX || 'subsync',
   };
 }
 

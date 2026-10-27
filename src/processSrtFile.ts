@@ -3,6 +3,7 @@ import { findMatchingVideoFile } from './findMatchingVideoFile';
 import { generateAutosubsyncSubtitles } from './generateAutosubsyncSubtitles';
 import { generateFfsubsyncSubtitles } from './generateFfsubsyncSubtitles';
 import { generateAlassSubtitles } from './generateAlassSubtitles';
+import { generateSubsyncSubtitles } from './generateSubsyncSubtitles';
 
 export const processSrtFile = async (srtFile: string) => {
   const videoFile = findMatchingVideoFile(srtFile);
@@ -26,6 +27,12 @@ export const processSrtFile = async (srtFile: string) => {
       const alassResult = await generateAlassSubtitles(srtFile, videoFile);
       const duration = Date.now() - startTime;
       console.log(`${new Date().toLocaleString()} alass result: ${alassResult.message} (${duration}ms)`);
+    }
+    if (includeEngines.includes('subsync')) {
+      const startTime = Date.now();
+      const subsyncResult = await generateSubsyncSubtitles(srtFile, videoFile);
+      const duration = Date.now() - startTime;
+      console.log(`${new Date().toLocaleString()} subsync result: ${subsyncResult.message} (${duration}ms)`);
     }
   } else {
     console.log(`${new Date().toLocaleString()} No matching video file found for: ${basename(srtFile)}`);
