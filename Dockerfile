@@ -5,11 +5,10 @@ ARG AUTOSUBSYNC_COMMIT=b392da2713aafe6de83e08e2571198988612febc
 ARG ALASS_COMMIT=874f02d9577182752a0f969b6d6b98fd65bdf1fc
 ARG SUBSYNC_COMMIT=1ff7bc91b87fe6644250323b8add790f8a9df2f2
 
-# === Python engine source builds ===
-FROM node:22-bookworm AS python-engine-builder
-ARG FFSUBSYNC_COMMIT
-ARG AUTOSUBSYNC_COMMIT
-ARG SUBSYNC_COMMIT
+# === Shared build tools, installed once for all engine and application builds ===
+FROM rust:1.85-bookworm AS rust-toolchain
+
+FROM node:22-bookworm AS build-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv python3-dev build-essential git pkg-config \
@@ -18,7 +17,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpocketsphinx-dev libsphinxbase-dev \
     && rm -rf /var/lib/apt/lists/*
 
-FROM python-engine-builder AS subsync-builder
+# === Python engine source builds ===
+FROM build-base AS subsync-builder
+ARG SUBSYNC_COMMIT
 # The fork has no assets release; use its working upstream fallback directly.
 COPY assets/subsync/config.py.template /tmp/subsync-config.py.template
 RUN git init /tmp/subsync \
@@ -36,7 +37,8 @@ RUN git init /tmp/subsync \
     && cp /tmp/subsync/LICENSE /opt/engine-licenses/subsync.txt \
     && rm -rf /tmp/subsync /tmp/subsync-config.py.template
 
-FROM python-engine-builder AS ffsubsync-builder
+FROM build-base AS ffsubsync-builder
+ARG FFSUBSYNC_COMMIT
 RUN git init /tmp/ffsubsync \
     && git -C /tmp/ffsubsync remote add origin https://github.com/smacke/ffsubsync.git \
     && git -C /tmp/ffsubsync fetch --depth 1 origin "$FFSUBSYNC_COMMIT" \
@@ -52,7 +54,8 @@ RUN git init /tmp/ffsubsync \
 
 # Upstream Git omits its pretrained weights. Bundle the upstream release's JSON
 # model as data; all executable autosubsync code is built from the Git checkout.
-FROM python-engine-builder AS autosubsync-builder
+FROM build-base AS autosubsync-builder
+ARG AUTOSUBSYNC_COMMIT
 COPY assets/autosubsync /tmp/autosubsync-model
 RUN echo '783f1c9c6a53cb48585974691c992ad762fdbd58caf468716d20bc5915e44063  /tmp/autosubsync-model/trained-model.json' | sha256sum -c - \
     && git init /tmp/autosubsync \
@@ -72,7 +75,12 @@ RUN echo '783f1c9c6a53cb48585974691c992ad762fdbd58caf468716d20bc5915e44063  /tmp
     && rm -rf /tmp/autosubsync /tmp/autosubsync-model
 
 # === Native alass source build; target architecture follows Docker's platform ===
-FROM rust:1.85-bookworm AS alass-builder
+FROM build-base AS alass-builder
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
+ENV PATH="/usr/local/cargo/bin:$PATH"
 ARG ALASS_COMMIT
 WORKDIR /src/alass
 RUN git init . \
@@ -86,15 +94,15 @@ RUN git init . \
     && /usr/local/bin/alass --help
 
 # === Application build ===
-FROM node:22-bookworm AS builder
+FROM build-base AS builder
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends python3 build-essential \
-    && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 ENV HUSKY=0
 RUN npm install --ignore-scripts && npm rebuild better-sqlite3
-COPY . .
+COPY tsconfig.json ./
+COPY src ./src
 RUN npm run build && npm prune --omit=dev
+COPY public ./public
 
 # === Runtime ===
 FROM node:22-bookworm-slim

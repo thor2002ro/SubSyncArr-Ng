@@ -123,6 +123,14 @@ All four engines are built inside dedicated Docker builder stages. The runtime
 image contains installed Python environments and the compiled Rust executable;
 the repository's old `bin/alass` executable is excluded from the build context.
 
+All engine stages and the application builder reuse one `build-base` stage, so
+Python, compilers, and media development libraries are installed once. Only the
+alass stage adds the Rust toolchain. Each engine declares its own revision build
+argument, keeping the other engine stages cached when one revision changes.
+Application builds copy only their source and configuration; README and Dockerfile
+changes do not trigger TypeScript compilation. Keep Docker's build cache to reuse
+these stages on subsequent builds; `--no-cache` forces them to run again.
+
 The defaults pin the latest upstream default-branch commits checked on
 **2026-10-27**:
 
