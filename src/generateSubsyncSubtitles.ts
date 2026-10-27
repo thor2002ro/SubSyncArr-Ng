@@ -1,11 +1,45 @@
 import { existsSync, statSync, unlinkSync } from 'fs';
-import { mkdir } from 'fs/promises';
 import { homedir } from 'os';
-import { basename, dirname, join } from 'path';
+import { basename, join, resolve } from 'path';
 import { getSuffixConfig } from './config';
 import { buildOutputPath, execPromise, getTimeoutMs, isNonEmptyFile, ProcessingResult } from './helpers';
 import { withUtf8Subtitle } from './subtitleEncoding';
 import { getSubsyncLanguage } from './subsyncLanguages';
+
+const pendingStarts = new Map<string, Promise<void>>();
+
+async function reserveStartup(lockPath: string, deadline: number): Promise<() => void> {
+  const key = resolve(lockPath);
+  const previous = pendingStarts.get(key) || Promise.resolve();
+  let unlock!: () => void;
+  const released = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  // Even a caller that times out must leave later callers behind the current
+  // preparation, rather than allowing them to start during its download.
+  const tail = previous.then(() => released);
+  pendingStarts.set(key, tail);
+  void tail.then(() => {
+    if (pendingStarts.get(key) === tail) pendingStarts.delete(key);
+  });
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('Timed out waiting for SubSync model preparation');
+    await Promise.race([
+      previous,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Timed out waiting for SubSync model preparation')), remaining);
+      }),
+    ]);
+    return unlock;
+  } catch (error) {
+    unlock();
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function detectReferenceLanguage(
   videoPath: string,
@@ -52,6 +86,7 @@ export async function generateSubsyncSubtitles(
 
   const deadline = Date.now() + getTimeoutMs();
   const remainingTimeout = () => Math.max(1, deadline - Date.now());
+  let releaseStartup: (() => void) | undefined;
   try {
     // Read the original name: encoding normalization can replace it with input.srt.
     const languageTag = basename(srtPath).match(/\.([a-z]{2,3})(?:\.(?:forced|sdh|cc|hi))*\.srt$/i)?.[1];
@@ -79,6 +114,8 @@ export async function generateSubsyncSubtitles(
     if (refStream && !/^[1-9]\d*$/.test(refStream)) {
       throw new Error('SUBSYNC_REF_STREAM must be a positive, 1-based stream number');
     }
+    const lockPath = process.env.SUBSYNC_LOCK_PATH || join(homedir(), '.config', 'subsync', '.subsyncarr.lock');
+    releaseStartup = await reserveStartup(lockPath, deadline);
     if (!refLang) refLang = await detectReferenceLanguage(videoPath, refStream, remainingTimeout());
 
     if (existsSync(outputPath)) {
@@ -110,22 +147,16 @@ export async function generateSubsyncSubtitles(
       if (subLang) args.push('--sub-lang', subLang);
       if (refLang) args.push('--ref-lang', refLang);
 
-      // Upstream's asset locks only coordinate threads within one process.
-      // Keep an OS lock for the CLI's entire lifetime so another invocation
-      // cannot read a model while it is being installed or updated.
-      const lockPath = process.env.SUBSYNC_LOCK_PATH || join(homedir(), '.config', 'subsync', '.subsyncarr.lock');
-      await mkdir(dirname(lockPath), { recursive: true });
+      // The bridge allows concurrent readers and locks missing-asset downloads
+      // exclusively. File concurrency remains controlled by the worker pool.
       console.log(`${new Date().toLocaleString()} Processing: subsync ${JSON.stringify(args)}`);
-      // --no-fork replaces flock with the CLI after acquiring the lock. The
-      // timeout therefore kills the lock waiter or the actual CLI, with no
-      // detached child left behind. The kernel releases the lock on exit.
-      const { stdout, stderr } = await execPromise('flock', remainingTimeout(), onLog, [
-        '--exclusive',
-        '--no-fork',
-        lockPath,
-        'subsync',
-        ...args,
-      ]);
+      const { stdout, stderr } = await execPromise(
+        process.env.SUBSYNC_PYTHON || '/opt/subsync/bin/python',
+        remainingTimeout(),
+        onLog,
+        [join(__dirname, 'subsyncBridge.py'), '--notify-ready', lockPath, ...args],
+        releaseStartup,
+      );
       if (!isNonEmptyFile(outputPath)) {
         throw Object.assign(new Error('SubSync did not produce a non-empty subtitle file'), { stdout, stderr });
       }
@@ -155,5 +186,8 @@ export async function generateSubsyncSubtitles(
       stdout: execError.stdout || undefined,
       stderr: execError.stderr || undefined,
     };
+  } finally {
+    // Spawn errors, failed preparation and timeouts also unblock the queue.
+    releaseStartup?.();
   }
 }

@@ -36,8 +36,10 @@ services:
       # - SUBSYNC_REF_STREAM=2          # 1-based absolute stream number, including video
       # - SUBSYNC_JOBS=1                # Internal decoder workers (default 1)
       # - SUBSYNC_SUFFIX=subsync        # Output: movie.en.subsync.srt
-      # Models/dictionaries persist in /app/data/subsync. SubSync calls sharing
-      # the cache are serialized; the engine timeout includes waiting for its lock.
+      # Models/dictionaries persist in /app/data/subsync. SubSync file concurrency
+      # follows MAX_CONCURRENT_SYNC_TASKS; missing-asset installation is exclusive.
+      # Further SubSync processes wait for a missing-asset download to finish.
+      # The engine timeout includes startup queueing, cache access and downloads.
       - REPLACE_ORIGINAL_SUBTITLE=false # Replace the source subtitle after success; requires exactly one engine
       - AUTOSUBSYNC_PARALLELISM=1 # 1 worker to save memory and avoid OOM kills on 4K files
       - AUTOSUBSYNC_SKIP_FORCED=true # Skip forced subtitles for autosubsync (ffsubsync and alass will handle them)

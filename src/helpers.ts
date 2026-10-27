@@ -48,11 +48,19 @@ export function execPromise(
   timeoutMs?: number,
   onLog?: (chunk: string) => void,
   args?: string[],
+  onReady?: () => void,
 ): Promise<{ stdout: string; stderr: string }> {
   const timeout = timeoutMs ?? getTimeoutMs();
   return new Promise((resolve, reject) => {
     // Argument arrays bypass the shell so media paths remain literal.
-    const child = spawn(command, args || [], { shell: args === undefined, env: process.env });
+    const child = spawn(command, args || [], {
+      shell: args === undefined,
+      env: process.env,
+      stdio: onReady ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
+    });
+    // Bridges may signal readiness on a dedicated pipe without adding control
+    // messages to the engine's stdout/stderr logs.
+    if (onReady) child.stdio[3]?.once('data', onReady);
     let stdout = '';
     let stderr = '';
     let isTimedOut = false;
@@ -62,7 +70,7 @@ export function execPromise(
       child.kill('SIGTERM');
     }, timeout);
 
-    child.stdout.on('data', (chunk: Buffer) => {
+    child.stdout!.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
       stdout += text;
       if (onLog) {
@@ -70,7 +78,7 @@ export function execPromise(
       }
     });
 
-    child.stderr.on('data', (chunk: Buffer) => {
+    child.stderr!.on('data', (chunk: Buffer) => {
       const text = chunk.toString();
       stderr += text;
       if (onLog) {

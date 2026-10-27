@@ -75,7 +75,7 @@ No single subtitle synchronization algorithm works perfectly for every scenario 
 - **Language compatibility**: Common ISO aliases are normalized to upstream's model keys (`ron` → `rum`, `deu` → `ger`, `fra` → `fre`). Explicit unsupported language overrides fail clearly. The fork's language table and available assets limit support; selecting a speech backend does not add missing language entries.
 - **Audio selection**: Uses the first audio stream. `SUBSYNC_REF_STREAM` selects an explicit **1-based absolute container stream number**, counting video and other streams too. Without `SUBSYNC_REF_LANG`, ffprobe reads that stream's language and normalizes it to the upstream model key. Missing or unsupported metadata fails with instructions to set `SUBSYNC_REF_LANG`. This override sets the language of the selected stream; it does not choose a different audio track.
 - **Models and dictionaries**: Downloaded automatically on first use. The Docker build copies the local configuration template from `assets/subsync/config.py.template`, based on the pinned SubSync source with its asset URL changed to the original project's catalog because the fork's URL returns 404. Its license is included in `assets/subsync/LICENSE.txt`. Internet access is needed for uncached assets; missing languages/models/dictionaries fail with engine logs. Docker persists this cache at `/app/data/subsync`, covered by the existing `/app/data` volume. Allow time for downloads within `SYNC_ENGINE_TIMEOUT_MS`.
-- **Concurrency and timeout**: `SUBSYNC_JOBS=1` limits internal decoder workers. SubSync CLI calls sharing a cache run one at a time under an OS file lock, protecting models during download and use; other engines can still run concurrently. The engine timeout includes metadata probing and lock waiting. A timeout releases the lock automatically.
+- **Concurrency and timeout**: `MAX_CONCURRENT_SYNC_TASKS` controls concurrent subtitle files for SubSync too; `SUBSYNC_JOBS=1` separately limits each process's internal decoder workers. The app waits for each starting process to confirm its assets are ready before launching another SubSync process. If a model or dictionary is missing, further launches wait for its download to finish; alignment then runs concurrently under a shared cache read lock. Installation uses an exclusive lock, waiting for active readers to finish. Cached assets are reused without checking for updates on each invocation. The engine timeout includes startup queueing, metadata probing and lock waiting. A timeout releases the lock automatically.
 - **Speech backend**: The Docker image bundles PocketSphinx (`sphinx`). `SUBSYNC_SPEECH_ENGINE=vosk` or `whisper` requires a separately built SubSync CLI with the corresponding native backend. Setting the variable alone does not install it.
 
 Example for Romanian subtitles with English audio:
@@ -91,9 +91,9 @@ For a non-Docker installation, build the pinned fork from source with its FFmpeg
 and PocketSphinx development dependencies (`libavdevice-dev`, `libavformat-dev`,
 `libavfilter-dev`, `libavcodec-dev`, `libswresample-dev`, `libswscale-dev`,
 `libavutil-dev`, `libpocketsphinx-dev`, `libsphinxbase-dev`, `python3-dev`,
-`pkg-config`, and a C++ compiler on Debian Bookworm). Also install `ffmpeg` and
-`util-linux` for the ffprobe and flock runtime commands. Install SubSync in a Python venv
-and put that venv's `bin` directory on the application's `PATH`. The Dockerfile
+`pkg-config`, and a C++ compiler on Debian Bookworm). Also install `ffmpeg` for
+the ffprobe runtime command. Install SubSync in a Python venv and set
+`SUBSYNC_PYTHON` to that venv's Python interpreter. The Dockerfile
 contains the pinned build recipe. Check `subsync --cli --help` before enabling it;
 installing an unrelated package named `subsync` will not provide this engine.
 
@@ -292,18 +292,20 @@ when that copy has been consumed by replacement or an external tool.
 
 ### SubSync speech alignment
 
-| Variable                | Default                              | Description                                                                                                                                                                                             |
-| :---------------------- | :----------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `SUBSYNC_SPEECH_ENGINE` | `sphinx`                             | `sphinx`, `vosk`, or `whisper`. The image builds the PocketSphinx backend; `vosk`/`whisper` require a separately built CLI with the matching native backend.                                            |
-| `SUBSYNC_SUB_LANG`      | _(automatic)_                        | Subtitle language override. Otherwise inferred from the original filename, with upstream detection used when no tag is available. Accepts supported two-/three-letter aliases, e.g. `en`, `eng`, `ron`. |
-| `SUBSYNC_REF_LANG`      | _(audio metadata)_                   | Audio language override. Set it when metadata is missing or unsupported. It describes the selected stream's language; use `SUBSYNC_REF_STREAM` to select a different stream.                            |
-| `SUBSYNC_REF_STREAM`    | _(first audio stream)_               | Positive **1-based absolute container stream number**, including video and other streams. For example, a video stream followed by an audio stream makes that audio stream number `2`.                   |
-| `SUBSYNC_JOBS`          | `1`                                  | Positive integer limiting internal decoder workers. SubSync invocations sharing a model cache are serialized by a file lock.                                                                            |
-| `SUBSYNC_FFPROBE_PATH`  | `/usr/bin/ffprobe`                   | Direct metadata-probe executable. Its invocation bypasses the image's PATH wrapper so timeout handling reaches the probe process.                                                                       |
-| `SUBSYNC_LOCK_PATH`     | `~/.config/subsync/.subsyncarr.lock` | Lock file for the shared model cache. All instances sharing that cache must use the same lock file. The image links `~/.config/subsync` to the persistent `/app/data/subsync` directory.                |
+| Variable                | Default                              | Description                                                                                                                                                                                                           |
+| :---------------------- | :----------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SUBSYNC_SPEECH_ENGINE` | `sphinx`                             | `sphinx`, `vosk`, or `whisper`. The image builds the PocketSphinx backend; `vosk`/`whisper` require a separately built CLI with the matching native backend.                                                          |
+| `SUBSYNC_SUB_LANG`      | _(automatic)_                        | Subtitle language override. Otherwise inferred from the original filename, with upstream detection used when no tag is available. Accepts supported two-/three-letter aliases, e.g. `en`, `eng`, `ron`.               |
+| `SUBSYNC_REF_LANG`      | _(audio metadata)_                   | Audio language override. Set it when metadata is missing or unsupported. It describes the selected stream's language; use `SUBSYNC_REF_STREAM` to select a different stream.                                          |
+| `SUBSYNC_REF_STREAM`    | _(first audio stream)_               | Positive **1-based absolute container stream number**, including video and other streams. For example, a video stream followed by an audio stream makes that audio stream number `2`.                                 |
+| `SUBSYNC_PYTHON`        | `/opt/subsync/bin/python`            | Interpreter containing the pinned SubSync fork. Runs the bundled bridge, which coordinates concurrent cache readers and missing-asset downloads. Set this to your SubSync venv's Python for a non-Docker install.     |
+| `SUBSYNC_JOBS`          | `1`                                  | Positive integer limiting internal decoder workers per process. File concurrency follows `MAX_CONCURRENT_SYNC_TASKS`.                                                                                                 |
+| `SUBSYNC_FFPROBE_PATH`  | `/usr/bin/ffprobe`                   | Direct metadata-probe executable. Its invocation bypasses the image's PATH wrapper so timeout handling reaches the probe process.                                                                                     |
+| `SUBSYNC_LOCK_PATH`     | `~/.config/subsync/.subsyncarr.lock` | Shared read lock during alignment; exclusive lock for missing-asset installation. All instances sharing the cache must use the same lock file. The image links `~/.config/subsync` to persistent `/app/data/subsync`. |
 
 Language models and translation dictionaries are downloaded on first use and
-reused from `/app/data/subsync`. Keep that directory on persistent storage using
+reused from `/app/data/subsync`. Runs with every required asset cached skip update checks;
+fetching a missing asset can also update other assets required by that job. Keep that directory on persistent storage using
 the `/app/data` volume. SubSync normalizes common aliases such as `ron` → `rum`
 and `deu` → `ger`; available languages and dictionaries depend on its upstream
 assets. Changing `SUBSYNC_SPEECH_ENGINE` alone installs neither a backend nor
@@ -328,7 +330,7 @@ environment:
 
 Use one timeout variable to avoid ambiguity. For example,
 `SYNC_ENGINE_TIMEOUT_MS=3600000` or `SYNC_TIMEOUT=3600` allows one hour. SubSync's
-budget includes audio metadata probing and waiting for its cache lock, so allow
+budget includes startup queueing, audio metadata probing and waiting for its cache lock, so allow
 time for first-use asset downloads and queued invocations.
 
 ### Web server and Docker runtime
