@@ -19,18 +19,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 FROM python-engine-builder AS subsync-builder
+# The fork has no assets release; use its working upstream fallback directly.
+COPY assets/subsync/config.py.template /tmp/subsync-config.py.template
 RUN git init /tmp/subsync \
     && git -C /tmp/subsync remote add origin https://github.com/neck0l/subsync.git \
     && git -C /tmp/subsync fetch --depth 1 origin "$SUBSYNC_COMMIT" \
     && git -C /tmp/subsync checkout --detach FETCH_HEAD \
     && test "$(git -C /tmp/subsync rev-parse HEAD)" = "$SUBSYNC_COMMIT" \
+    && cp /tmp/subsync-config.py.template /tmp/subsync/subsync/config.py.template \
     && python3 -m venv /opt/subsync \
     && /opt/subsync/bin/pip install --no-cache-dir /tmp/subsync \
+    && /opt/subsync/bin/python -c 'from subsync import config; assert config.assetsurl == "https://github.com/sc0ty/subsync/releases/download/assets/assets.json"' \
     && /opt/subsync/bin/python -c 'import gizmo; assert hasattr(gizmo, "Demux")' \
     && /opt/subsync/bin/subsync --cli --help \
     && mkdir -p /opt/engine-licenses \
     && cp /tmp/subsync/LICENSE /opt/engine-licenses/subsync.txt \
-    && rm -rf /tmp/subsync
+    && rm -rf /tmp/subsync /tmp/subsync-config.py.template
 
 FROM python-engine-builder AS ffsubsync-builder
 RUN git init /tmp/ffsubsync \
